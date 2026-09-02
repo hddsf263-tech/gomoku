@@ -1,0 +1,25 @@
+﻿# Build outputs
+build/
+cmake-build-*/
+*.exe
+*.obj
+*.o
+*.pdb
+*.ilk
+*.a
+*.lib
+
+# CMake / Ninja generated files
+CMakeCache.txt
+CMakeFiles/
+build.ninja
+cmake_install.cmake
+*.autosave
+
+# IDE and local config
+.vscode/
+.idea/
+.vs/
+*.user
+Thumbs.db
+.DS_Store
