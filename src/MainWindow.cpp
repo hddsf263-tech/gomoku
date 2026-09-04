@@ -18,6 +18,7 @@ MainWindow::MainWindow(QWidget *parent)
     , undoButton(nullptr)
     , m_isAIThinking(false)
     , m_aiWatcher(nullptr)
+    , m_myColor(Gomoku::ChessPiece::Black)
 {
     setupUI();
     createMenus();
@@ -35,6 +36,25 @@ MainWindow::MainWindow(QWidget *parent)
             game.getState() == Gomoku::GameState::InProgress) {
             scheduleAIMove();
         }
+    });
+
+    network.onConnected([this]() {
+        onNetworkConnected();
+    });
+    network.onDisconnected([this]() {
+        onNetworkDisconnected();
+    });
+    network.onError([this](const QString& message) {
+        onNetworkError(message);
+    });
+    network.onMove([this](int row, int col) {
+        onNetworkMove(row, col);
+    });
+    network.onHello([this](int color) {
+        onNetworkHello(color);
+    });
+    network.onReset([this]() {
+        onNetworkReset();
     });
 
     updateStatusBar();
@@ -120,12 +140,26 @@ void MainWindow::createMenus() {
             "游戏规则：\n"
             "1. 黑方先行，双方轮流落子\n"
             "2. 先形成五子连珠者获胜\n"
-            "3. 支持人机对战和双人对战\n\n"
+            "3. 支持人机对战、双人对战和网络对战\n\n"
             "《软件设计》课程项目");
     });
 }
 
 void MainWindow::onNewGame() {
+    if (m_config.isNetwork) {
+        if (network.isConnected()) {
+            network.sendReset();
+            game.startNewGame();
+            game.setPlayerType(Gomoku::ChessPiece::Black, Gomoku::PlayerType::Human);
+            game.setPlayerType(Gomoku::ChessPiece::White, Gomoku::PlayerType::Human);
+            boardWidget->updateBoard();
+            updateStatusBar();
+            return;
+        }
+        // 已断开：关闭网络实例，让用户回到模式选择
+        network.disconnectPeer();
+    }
+
     Gomoku::GameModeDialog dialog(this);
     if (dialog.exec() == QDialog::Accepted) {
         startNewGameWithConfig(dialog.getConfig());
@@ -136,6 +170,13 @@ void MainWindow::startNewGameWithConfig(const Gomoku::GameConfig& config) {
     aiPlayer.cancel();
     if (m_aiWatcher) {
         m_aiWatcher->waitForFinished();
+    }
+
+    m_config = config;
+
+    if (config.isNetwork) {
+        startNetworkGame(config);
+        return;
     }
 
     game.startNewGame();
@@ -180,6 +221,39 @@ void MainWindow::startNewGameWithConfig(const Gomoku::GameConfig& config) {
     }
 }
 
+void MainWindow::startNetworkGame(const Gomoku::GameConfig& config) {
+    game.startNewGame();
+    game.setPlayerType(Gomoku::ChessPiece::Black, Gomoku::PlayerType::Human);
+    game.setPlayerType(Gomoku::ChessPiece::White, Gomoku::PlayerType::Human);
+
+    boardWidget->setEnabled(false);
+    undoButton->setEnabled(false);
+    boardWidget->updateBoard();
+
+    if (config.networkIsHost) {
+        m_myColor = Gomoku::ChessPiece::Black;
+        bool ok = network.listen(config.networkPort);
+        if (!ok) {
+            m_config = Gomoku::GameConfig();
+            undoButton->setEnabled(true);
+            boardWidget->setEnabled(true);
+            QMessageBox::warning(this, "错误", "端口监听失败，请更换端口后重试");
+            statusLabel->setText("端口监听失败");
+            setWindowTitle("五子棋 - Gomoku");
+            return;
+        }
+        setWindowTitle("五子棋 - 网络对战（主机）");
+        statusLabel->setText("已开启房间，等待对手加入...");
+        currentPlayerLabel->setText("主机 · 黑方");
+    } else {
+        m_myColor = Gomoku::ChessPiece::White;
+        network.connectToHost(config.networkHost, config.networkPort);
+        setWindowTitle("五子棋 - 网络对战（客户端）");
+        statusLabel->setText("正在连接主机...");
+        currentPlayerLabel->setText("客户端 · 白方");
+    }
+}
+
 void MainWindow::scheduleAIMove() {
     if (m_isAIThinking) {
         return;
@@ -219,6 +293,11 @@ void MainWindow::scheduleAIMove() {
 }
 
 void MainWindow::onUndo() {
+    if (m_config.isNetwork) {
+        QMessageBox::information(this, "提示", "网络对战暂不支持悔棋");
+        return;
+    }
+
     if (m_isAIThinking) {
         QMessageBox::information(this, "提示", "AI 思考中，请稍候...");
         return;
@@ -236,6 +315,38 @@ void MainWindow::onUndo() {
 }
 
 void MainWindow::onPositionClicked(int row, int col) {
+    if (m_config.isNetwork) {
+        if (!network.isConnected()) {
+            statusLabel->setText("尚未连接对手");
+            return;
+        }
+        if (game.isAITurn() ||
+            game.getCurrentPlayer() != m_myColor) {
+            statusLabel->setText("请等待对手落子");
+            return;
+        }
+
+        auto result = game.makeMove(row, col);
+        if (result == Gomoku::MoveResult::Success) {
+            network.sendMove(row, col);
+        } else {
+            switch (result) {
+                case Gomoku::MoveResult::InvalidPosition:
+                    QMessageBox::warning(this, "提示", "无效的位置");
+                    break;
+                case Gomoku::MoveResult::PositionOccupied:
+                    QMessageBox::warning(this, "提示", "该位置已有棋子");
+                    break;
+                case Gomoku::MoveResult::GameEnded:
+                    QMessageBox::information(this, "提示", "游戏已结束，请开始新游戏");
+                    break;
+                default:
+                    break;
+            }
+        }
+        return;
+    }
+
     if (m_isAIThinking) {
         return;
     }
@@ -284,6 +395,67 @@ void MainWindow::onGameStateChanged(Gomoku::GameState state) {
     }
 }
 
+void MainWindow::onNetworkConnected() {
+    boardWidget->setEnabled(true);
+    undoButton->setEnabled(false);
+
+    if (network.role() == Gomoku::NetworkManager::Role::Host) {
+        m_myColor = Gomoku::ChessPiece::Black;
+        network.sendHello(0);
+        statusLabel->setText("对手已加入，黑方先行");
+        currentPlayerLabel->setText("主机 · 黑方");
+    } else {
+        m_myColor = Gomoku::ChessPiece::White;
+        network.sendHello(1);
+        statusLabel->setText("已连接到主机，等待黑方落子");
+        currentPlayerLabel->setText("客户端 · 白方");
+    }
+
+    updateStatusBar();
+}
+
+void MainWindow::onNetworkDisconnected() {
+    boardWidget->setEnabled(false);
+    undoButton->setEnabled(false);
+    statusLabel->setText("对手已断开连接");
+    currentPlayerLabel->setText("连接断开");
+    QMessageBox::information(this, "提示", "对手已断开连接，请重新开始游戏。");
+}
+
+void MainWindow::onNetworkError(const QString& message) {
+    statusLabel->setText("网络错误：" + message);
+    QMessageBox::warning(this, "网络错误", message);
+}
+
+void MainWindow::onNetworkMove(int row, int col) {
+    if (!network.isConnected()) {
+        return;
+    }
+    if (game.getState() != Gomoku::GameState::InProgress) {
+        return;
+    }
+    // 收到的移动应来自对手：当前轮到对手（即不是自己）。
+    if (game.getCurrentPlayer() == m_myColor) {
+        return;
+    }
+    game.makeMove(row, col);
+}
+
+void MainWindow::onNetworkHello(int color) {
+    // color 是对方颜色，自己取相反颜色，保证两端一致。
+    m_myColor = (color == 0) ? Gomoku::ChessPiece::White
+                             : Gomoku::ChessPiece::Black;
+    updateStatusBar();
+}
+
+void MainWindow::onNetworkReset() {
+    game.startNewGame();
+    game.setPlayerType(Gomoku::ChessPiece::Black, Gomoku::PlayerType::Human);
+    game.setPlayerType(Gomoku::ChessPiece::White, Gomoku::PlayerType::Human);
+    boardWidget->updateBoard();
+    updateStatusBar();
+}
+
 void MainWindow::setAIThinkingState(bool thinking) {
     m_isAIThinking = thinking;
     boardWidget->setEnabled(!thinking);
@@ -309,10 +481,18 @@ void MainWindow::updateStatusBar() {
 
         case Gomoku::GameState::InProgress:
             statusLabel->setText("游戏进行中");
-            if (game.getCurrentPlayer() == Gomoku::ChessPiece::Black) {
-                currentPlayerLabel->setText("黑方回合");
+            if (m_config.isNetwork && network.isConnected()) {
+                if (game.getCurrentPlayer() == m_myColor) {
+                    currentPlayerLabel->setText("你的回合");
+                } else {
+                    currentPlayerLabel->setText("等待对方落子");
+                }
             } else {
-                currentPlayerLabel->setText("白方回合");
+                if (game.getCurrentPlayer() == Gomoku::ChessPiece::Black) {
+                    currentPlayerLabel->setText("黑方回合");
+                } else {
+                    currentPlayerLabel->setText("白方回合");
+                }
             }
             break;
 

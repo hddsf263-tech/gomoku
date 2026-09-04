@@ -7,6 +7,10 @@
 #include <QPushButton>
 #include <QVBoxLayout>
 #include <QGroupBox>
+#include <QSpinBox>
+#include <QLineEdit>
+#include <QString>
+#include <QtGlobal>
 
 namespace Gomoku {
 
@@ -28,6 +32,15 @@ struct GameConfig {
     bool isHumanVsAI = false;
     PlayerColor humanColor = PlayerColor::Black;
     AIDifficultyLevel aiDifficulty = AIDifficultyLevel::Normal;
+
+    /// @brief 是否网络对战
+    bool isNetwork = false;
+    /// @brief true=创建房间(主机)，false=加入房间(客户端)
+    bool networkIsHost = false;
+    /// @brief 客户端连接的主机地址
+    QString networkHost = "127.0.0.1";
+    /// @brief 端口
+    quint16 networkPort = 12345;
 };
 
 /// @brief 新游戏模式选择对话框
@@ -43,9 +56,11 @@ public:
 private:
     void setupUI();
     void updateOptions();
+    void updateNetworkOptions();
 
     QRadioButton* humanVsHumanRadio;
     QRadioButton* humanVsAIRadio;
+    QRadioButton* networkRadio;
 
     QGroupBox* colorGroupBox;
     QRadioButton* blackRadio;
@@ -53,6 +68,12 @@ private:
 
     QGroupBox* difficultyGroupBox;
     QComboBox* difficultyCombo;
+
+    QGroupBox* networkGroupBox;
+    QRadioButton* hostRadio;
+    QRadioButton* clientRadio;
+    QLineEdit* hostAddressEdit;
+    QSpinBox* portSpinBox;
 
     QPushButton* okButton;
     QPushButton* cancelButton;

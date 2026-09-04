@@ -1,6 +1,8 @@
 #include "GameModeDialog.h"
 #include <QDialogButtonBox>
 #include <QFormLayout>
+#include <QHBoxLayout>
+#include <QLabel>
 
 namespace Gomoku {
 
@@ -22,9 +24,11 @@ void GameModeDialog::setupUI() {
 
     humanVsHumanRadio = new QRadioButton("双人对战", this);
     humanVsAIRadio = new QRadioButton("人机对战", this);
+    networkRadio = new QRadioButton("网络对战（双设备联机）", this);
 
     modeLayout->addWidget(humanVsHumanRadio);
     modeLayout->addWidget(humanVsAIRadio);
+    modeLayout->addWidget(networkRadio);
 
     humanVsHumanRadio->setChecked(true);
 
@@ -57,6 +61,33 @@ void GameModeDialog::setupUI() {
 
     mainLayout->addWidget(difficultyGroupBox);
 
+    networkGroupBox = new QGroupBox("网络设置", this);
+    auto* netLayout = new QVBoxLayout(networkGroupBox);
+
+    hostRadio = new QRadioButton("创建房间（主机 · 执黑）", this);
+    clientRadio = new QRadioButton("加入房间（客户端 · 执白）", this);
+    hostRadio->setChecked(true);
+
+    netLayout->addWidget(hostRadio);
+    netLayout->addWidget(clientRadio);
+
+    auto* addrRow = new QHBoxLayout;
+    addrRow->addWidget(new QLabel("主机地址：", this));
+    hostAddressEdit = new QLineEdit("127.0.0.1", this);
+    addrRow->addWidget(hostAddressEdit, 1);
+    netLayout->addLayout(addrRow);
+
+    auto* portRow = new QHBoxLayout;
+    portRow->addWidget(new QLabel("端口：", this));
+    portSpinBox = new QSpinBox(this);
+    portSpinBox->setRange(1, 65535);
+    portSpinBox->setValue(12345);
+    portRow->addWidget(portSpinBox, 1);
+    netLayout->addLayout(portRow);
+
+    networkGroupBox->setEnabled(false);
+    mainLayout->addWidget(networkGroupBox);
+
     mainLayout->addStretch();
 
     auto* buttonBox = new QDialogButtonBox(
@@ -76,12 +107,27 @@ void GameModeDialog::setupUI() {
     connect(humanVsAIRadio, &QRadioButton::toggled, this, [this]() {
         updateOptions();
     });
+    connect(networkRadio, &QRadioButton::toggled, this, [this]() {
+        updateOptions();
+    });
+    connect(hostRadio, &QRadioButton::toggled, this, [this]() {
+        updateNetworkOptions();
+    });
+    connect(clientRadio, &QRadioButton::toggled, this, [this]() {
+        updateNetworkOptions();
+    });
 }
 
 void GameModeDialog::updateOptions() {
     bool isHumanVsAI = humanVsAIRadio->isChecked();
     colorGroupBox->setEnabled(isHumanVsAI);
     difficultyGroupBox->setEnabled(isHumanVsAI);
+    networkGroupBox->setEnabled(networkRadio->isChecked());
+}
+
+void GameModeDialog::updateNetworkOptions() {
+    bool isHost = hostRadio->isChecked();
+    hostAddressEdit->setEnabled(!isHost);
 }
 
 GameConfig GameModeDialog::getConfig() const {
@@ -93,6 +139,11 @@ GameConfig GameModeDialog::getConfig() const {
 
     int diffIndex = difficultyCombo->currentIndex();
     config.aiDifficulty = static_cast<AIDifficultyLevel>(diffIndex);
+
+    config.isNetwork = networkRadio->isChecked();
+    config.networkIsHost = hostRadio->isChecked();
+    config.networkHost = hostAddressEdit->text().trimmed();
+    config.networkPort = static_cast<quint16>(portSpinBox->value());
 
     return config;
 }

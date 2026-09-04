@@ -8,9 +8,9 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
-find_package(Qt6 COMPONENTS Core Gui Widgets Concurrent QUIET)
+find_package(Qt6 COMPONENTS Core Gui Widgets Concurrent Network QUIET)
 if(NOT Qt6_FOUND)
-    find_package(Qt5 5.15 COMPONENTS Core Gui Widgets Concurrent REQUIRED)
+    find_package(Qt5 5.15 COMPONENTS Core Gui Widgets Concurrent Network REQUIRED)
 endif()
 
 set(SOURCES
@@ -20,6 +20,7 @@ set(SOURCES
     src/Game.cpp
     src/GameModeDialog.cpp
     src/Board.cpp
+    src/NetworkManager.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/moc_MainWindow.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/moc_BoardWidget.cpp
     ${CMAKE_CURRENT_BINARY_DIR}/moc_GameModeDialog.cpp
@@ -32,6 +33,7 @@ set(HEADERS
     include/Game.h
     include/Board.h
     include/ChessPiece.h
+    include/NetworkManager.h
 )
 
 # 手动 moc：当前环境 g++ -E 不可用，AutoMoc 的 moc_predefs 生成会失败
@@ -73,9 +75,9 @@ target_include_directories(Gomoku PRIVATE
 )
 
 if(Qt6_FOUND)
-    target_link_libraries(Gomoku PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Concurrent ai_core)
+    target_link_libraries(Gomoku PRIVATE Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Concurrent Qt6::Network ai_core)
 else()
-    target_link_libraries(Gomoku PRIVATE Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Concurrent ai_core)
+    target_link_libraries(Gomoku PRIVATE Qt5::Core Qt5::Gui Qt5::Widgets Qt5::Concurrent Qt5::Network ai_core)
 endif()
 
 # AI Core（Phase 2A：独立静态库，不接入 UI / Gomoku）
