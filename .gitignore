@@ -1,4 +1,4 @@
-﻿# Build outputs
+# Build outputs
 build/
 cmake-build-*/
 *.exe
@@ -23,3 +23,7 @@ cmake_install.cmake
 *.user
 Thumbs.db
 .DS_Store
+
+# IDE & local build dirs
+build_*/
+.qtcreator/
