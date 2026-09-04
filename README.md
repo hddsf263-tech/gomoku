@@ -2,7 +2,7 @@
 
 一款基于 C++ Qt 开发的桌面五子棋游戏，作为《软件设计》课程项目最终产品。
 
-![Game Screenshot](docs/screenshot.png)
+![Game Screenshot](docs/screenshot_main.png)
 
 ## 项目简介
 
@@ -25,6 +25,7 @@
 - ✅ 悔棋功能
 - ✅ 当前玩家显示
 - ✅ 非法落子提示
+- ✅ 双设备在线联机对战（TCP）
 
 ### 界面特性
 - 🎨 木质纹理棋盘背景
@@ -73,6 +74,8 @@
 | `Game` | 游戏流程控制、玩家切换、状态管理 | `include/Game.h`, `src/Game.cpp` |
 | `BoardWidget` | 棋盘可视化绘制、鼠标事件处理 | `src/BoardWidget.h`, `src/BoardWidget.cpp` |
 | `MainWindow` | 主窗口、菜单栏、控制面板 | `src/MainWindow.h`, `src/MainWindow.cpp` |
+| `NetworkManager` | 联机通信（TCP + JSON 协议） | `include/NetworkManager.h`, `src/NetworkManager.cpp` |
+| `GameModeDialog` | 游戏模式选择（本地 / 网络对战） | `src/GameModeDialog.h`, `src/GameModeDialog.cpp` |
 
 ### 设计原则
 
@@ -91,7 +94,8 @@ gomoku/
 ├── include/
 │   ├── ChessPiece.h        # 棋子与游戏状态枚举
 │   ├── Board.h             # 棋盘类头文件
-│   └── Game.h              # 游戏类头文件
+│   ├── Game.h              # 游戏类头文件
+│   └── NetworkManager.h    # 联机通信类头文件
 ├── src/
 │   ├── main.cpp            # 程序入口
 │   ├── Board.cpp           # 棋盘类实现
@@ -99,7 +103,10 @@ gomoku/
 │   ├── BoardWidget.h       # 棋盘控件头文件
 │   ├── BoardWidget.cpp     # 棋盘控件实现
 │   ├── MainWindow.h        # 主窗口头文件
-│   └── MainWindow.cpp      # 主窗口实现
+│   ├── MainWindow.cpp      # 主窗口实现
+│   ├── GameModeDialog.h    # 游戏模式选择头文件
+│   ├── GameModeDialog.cpp  # 游戏模式选择实现
+│   └── NetworkManager.cpp  # 联机通信类实现
 ├── resources/              # 资源文件（图标、音效等）
 └── docs/                   # 文档资料
 ```
@@ -187,6 +194,48 @@ open Gomoku.app
 ```bash
 ./Gomoku
 ```
+
+## 双设备在线联机对战
+
+本项目支持两台设备通过局域网（同一 WiFi）在线对战，采用 Qt TCP 套接字 + JSON 消息通信。一台设备开房间当「主机」（执黑先手），另一台设备「加入」当客户端（执白）。
+
+### 操作流程
+
+1. 两台设备连接**同一个 WiFi / 局域网**
+2. **主机设备**：双击 `Gomoku.exe` 启动，在开始界面选择「网络对战」，点「创建房间」，记下端口号（默认 `12345`）
+3. **客户端设备**：启动程序，选择「网络对战」，点「加入」，填写主机的 IP 和端口
+   - 查看主机 IP：Windows 按 `Win + R` 输入 `cmd`，运行 `ipconfig`，找到「IPv4 地址」，例如 `192.168.1.100`
+4. 两设备都进入棋盘后，主机（黑方）先手，轮流点击落子
+5. 任一方点击「重新开始」，双方棋盘同步清空
+
+### 注意事项
+
+| 项目 | 说明 |
+|------|------|
+| 网络 | 必须同一局域网；公网联机需自行做端口映射 / 内网穿透 |
+| 防火墙 | 主机需放行 TCP `12345` 端口，否则客户端连不上 |
+| 端口 | 默认 `12345`，创建房间时可修改；客户端端口需与主机一致 |
+| 先手 | 主机执黑先手，客户端执白后手 |
+| 悔棋 | 联机对战为公平起见不开放悔棋 |
+| 掉线 | 一方关闭窗口后，另一方会收到断开提示 |
+
+### 防火墙放行端口（Windows）
+
+1. 按 `Win + R` 输入 `wf.msc` 打开「高级安全 Windows 防火墙」
+2. 点击「入站规则」→「新建规则」→「端口」
+3. 选择「TCP」，特定本地端口填 `12345`
+4. 选择「允许连接」→ 完成
+5. 若连接失败，请先确认防火墙已放行该端口
+
+### 通信协议（开发参考）
+
+采用换行分隔的 JSON 文本：
+
+| 消息 | 方向 | 含义 |
+|------|------|------|
+| `{"type":"HELLO","color":0}` | 客户端 → 主机 | 加入房间，0=黑，1=白 |
+| `{"type":"MOVE","row":r,"col":c}` | 双向 | 落子坐标 |
+| `{"type":"RESET"}` | 双向 | 重新开始 |
 
 ## 游戏操作方法
 
@@ -295,12 +344,11 @@ open Gomoku.app
 - [ ] 落子音效
 - [ ] 胜利动画效果
 - [ ] 游戏记录统计
-- [ ] 网络对战模式
 
 ### 扩展建议
 
 1. **AI 功能**: 在 `Game` 类中添加 AI 落子方法，使用 minimax 算法或基于规则的评估
-2. **网络对战**: 添加 `NetworkManager` 类，使用 Qt Network 模块实现 TCP 通信
+2. **网络对战**: 已通过 `NetworkManager` 实现，使用 Qt Network 模块的 TCP 通信，后续可扩展公网联机
 3. **棋谱功能**: 添加 `GameRecord` 类，支持 SGF 格式导入导出
 
 ## 许可证
@@ -313,5 +361,5 @@ open Gomoku.app
 
 ---
 
-**最后更新**: 2026-08-28  
-**项目版本**: 1.0
+**最后更新**: 2026-09-04  
+**项目版本**: 1.1
