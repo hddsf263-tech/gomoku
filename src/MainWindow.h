@@ -11,6 +11,10 @@
 #include "GameModeDialog.h"
 #include "ai/AIPlayer.h"
 #include "ai/SearchResult.h"
+#include "AppSettings.h"
+#include "SoundPlayer.h"
+
+class QAction;
 
 class BoardWidget;
 
@@ -26,6 +30,8 @@ private slots:
     void onUndo();
     void onPositionClicked(int row, int col);
     void onGameStateChanged(Gomoku::GameState state);
+    void onOpenSettings();
+    void onToggleSound(bool enabled);
 
 private:
     void setupUI();
@@ -43,12 +49,15 @@ private:
     void onNetworkHello(int color);
     void onNetworkReset();
 
+    void refreshSettings();
+
     Gomoku::Game game;
     Gomoku::AIPlayer aiPlayer;
     Gomoku::NetworkManager network;
     BoardWidget* boardWidget;
     QLabel* statusLabel;
     QLabel* currentPlayerLabel;
+    QLabel* moveInfoLabel;
     QPushButton* newGameButton;
     QPushButton* undoButton;
     bool m_isAIThinking;
@@ -56,6 +65,11 @@ private:
 
     Gomoku::GameConfig m_config;
     Gomoku::ChessPiece m_myColor;
+
+    AppCfg::AppSettings m_settings;
+    SoundPlayer m_soundPlayer;
+    QAction* m_soundMenuAction;
+    QAction* m_soundToolAction;
 };
 
 #endif // MAINWINDOW_H

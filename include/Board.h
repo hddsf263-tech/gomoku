@@ -66,6 +66,10 @@ public:
     /// @return 如果形成五连返回 true
     bool checkFiveInRow(int row, int col, ChessPiece piece) const;
     
+    /// @brief 获取指定位置所在的获胜连线
+    /// @return 获胜连线上的所有位置；若未形成五连则返回空
+    std::vector<Position> getWinningLine(int row, int col, ChessPiece piece) const;
+    
 private:
     /// @brief 检查某个方向的连续棋子数
     int countConsecutive(int row, int col, int deltaRow, int deltaCol, ChessPiece piece) const;

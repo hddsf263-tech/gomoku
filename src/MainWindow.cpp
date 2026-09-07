@@ -1,10 +1,13 @@
 #include "MainWindow.h"
 #include "BoardWidget.h"
+#include "SettingsDialog.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QMessageBox>
 #include <QMenuBar>
+#include <QToolBar>
+#include <QAction>
 #include <QApplication>
 #include <QtConcurrent/QtConcurrent>
 #include <QTimer>
@@ -14,20 +17,29 @@ MainWindow::MainWindow(QWidget *parent)
     , boardWidget(nullptr)
     , statusLabel(nullptr)
     , currentPlayerLabel(nullptr)
+    , moveInfoLabel(nullptr)
     , newGameButton(nullptr)
     , undoButton(nullptr)
     , m_isAIThinking(false)
     , m_aiWatcher(nullptr)
     , m_myColor(Gomoku::ChessPiece::Black)
+    , m_soundMenuAction(nullptr)
+    , m_soundToolAction(nullptr)
 {
     setupUI();
     createMenus();
+
+    m_settings = AppCfg::AppSettings::load();
+    refreshSettings();
 
     game.onStateChanged([this](Gomoku::GameState state) {
         onGameStateChanged(state);
     });
 
-    game.onMoveMade([this](int, int) {
+    game.onMoveMade([this](int row, int col) {
+        int player = (game.getCurrentPlayer() == Gomoku::ChessPiece::Black) ? 0 : 1;
+        m_soundPlayer.playPlaceSound(player);
+        boardWidget->triggerPlaceEffect(row, col, player);
         boardWidget->updateBoard();
         updateStatusBar();
 
@@ -91,6 +103,10 @@ void MainWindow::setupUI() {
     statusLabel->setStyleSheet("font-size: 14px; padding: 5px;");
     controlLayout->addWidget(statusLabel);
 
+    moveInfoLabel = new QLabel("等待落子", this);
+    moveInfoLabel->setStyleSheet("font-size: 13px; padding: 5px; color: #555;");
+    controlLayout->addWidget(moveInfoLabel);
+
     controlLayout->addStretch();
 
     newGameButton = new QPushButton("新游戏", this);
@@ -111,6 +127,15 @@ void MainWindow::setupUI() {
 
     setWindowTitle("五子棋 - Gomoku");
     setMinimumSize(700, 600);
+
+    QToolBar* toolBar = addToolBar("音效");
+    toolBar->setMovable(false);
+    toolBar->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    m_soundToolAction = toolBar->addAction("音效：开");
+    m_soundToolAction->setCheckable(true);
+    m_soundToolAction->setChecked(true);
+    connect(m_soundToolAction, &QAction::toggled,
+            this, &MainWindow::onToggleSound);
 }
 
 void MainWindow::createMenus() {
@@ -128,6 +153,19 @@ void MainWindow::createMenus() {
 
     QAction* undoAction = gameMenu->addAction("悔棋(&U)");
     connect(undoAction, &QAction::triggered, this, &MainWindow::onUndo);
+
+    QMenu* settingsMenu = menuBar()->addMenu("设置(&S)");
+
+    QAction* skinAction = settingsMenu->addAction("外观与音效(&P)");
+    connect(skinAction, &QAction::triggered, this, &MainWindow::onOpenSettings);
+
+    settingsMenu->addSeparator();
+
+    m_soundMenuAction = settingsMenu->addAction("音效开关(&M)");
+    m_soundMenuAction->setCheckable(true);
+    m_soundMenuAction->setChecked(true);
+    connect(m_soundMenuAction, &QAction::toggled,
+            this, &MainWindow::onToggleSound);
 
     QMenu* helpMenu = menuBar()->addMenu("帮助(&H)");
 
@@ -152,6 +190,7 @@ void MainWindow::onNewGame() {
             game.startNewGame();
             game.setPlayerType(Gomoku::ChessPiece::Black, Gomoku::PlayerType::Human);
             game.setPlayerType(Gomoku::ChessPiece::White, Gomoku::PlayerType::Human);
+            boardWidget->clearBoardEffects();
             boardWidget->updateBoard();
             updateStatusBar();
             return;
@@ -179,6 +218,7 @@ void MainWindow::startNewGameWithConfig(const Gomoku::GameConfig& config) {
         return;
     }
 
+    boardWidget->clearBoardEffects();
     game.startNewGame();
     game.setPlayerType(Gomoku::ChessPiece::Black, Gomoku::PlayerType::Human);
     game.setPlayerType(Gomoku::ChessPiece::White, Gomoku::PlayerType::Human);
@@ -377,6 +417,18 @@ void MainWindow::onPositionClicked(int row, int col) {
 void MainWindow::onGameStateChanged(Gomoku::GameState state) {
     updateStatusBar();
 
+    if (state == Gomoku::GameState::BlackWin ||
+        state == Gomoku::GameState::WhiteWin) {
+        Gomoku::ChessPiece winner = game.getCurrentPlayer();
+        auto lastMove = game.getBoard().getLastMove();
+        if (lastMove.has_value()) {
+            auto winCells = game.getBoard().getWinningLine(
+                lastMove->row, lastMove->col, winner);
+            boardWidget->triggerWinEffect(winCells);
+            m_soundPlayer.playWinSound();
+        }
+    }
+
     switch (state) {
         case Gomoku::GameState::BlackWin:
             QMessageBox::information(this, "游戏结束", "黑方获胜！");
@@ -452,8 +504,43 @@ void MainWindow::onNetworkReset() {
     game.startNewGame();
     game.setPlayerType(Gomoku::ChessPiece::Black, Gomoku::PlayerType::Human);
     game.setPlayerType(Gomoku::ChessPiece::White, Gomoku::PlayerType::Human);
+    boardWidget->clearBoardEffects();
     boardWidget->updateBoard();
     updateStatusBar();
+}
+
+void MainWindow::onOpenSettings() {
+    SettingsDialog dialog(m_settings, this);
+    if (dialog.exec() == QDialog::Accepted) {
+        m_settings = dialog.getSettings();
+        m_settings.save();
+        refreshSettings();
+    }
+}
+
+void MainWindow::onToggleSound(bool enabled) {
+    m_settings.soundEnabled = enabled;
+    m_settings.save();
+    refreshSettings();
+}
+
+void MainWindow::refreshSettings() {
+    m_soundPlayer.configure(m_settings);
+    if (boardWidget) {
+        boardWidget->configure(m_settings);
+    }
+
+    if (m_soundMenuAction) {
+        m_soundMenuAction->blockSignals(true);
+        m_soundMenuAction->setChecked(m_settings.soundEnabled);
+        m_soundMenuAction->blockSignals(false);
+    }
+    if (m_soundToolAction) {
+        m_soundToolAction->blockSignals(true);
+        m_soundToolAction->setChecked(m_settings.soundEnabled);
+        m_soundToolAction->setText(m_settings.soundEnabled ? "音效：开" : "音效：关");
+        m_soundToolAction->blockSignals(false);
+    }
 }
 
 void MainWindow::setAIThinkingState(bool thinking) {
@@ -510,5 +597,15 @@ void MainWindow::updateStatusBar() {
             statusLabel->setText("游戏结束");
             currentPlayerLabel->setText("平局");
             break;
+    }
+
+    // 状态栏显示当前手数与最后一步坐标（与网页版一致，如 "12 手 · C8"）
+    const auto& moves = game.getBoard().getMoveHistory();
+    if (moves.empty()) {
+        moveInfoLabel->setText("等待落子");
+    } else {
+        const auto& last = moves.back();
+        QString coord = QString(QChar('A' + last.col)) + QString::number(last.row + 1);
+        moveInfoLabel->setText(QString("%1 手 · %2").arg(moves.size()).arg(coord));
     }
 }

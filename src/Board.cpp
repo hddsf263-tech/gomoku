@@ -95,6 +95,44 @@ bool Board::checkFiveInRow(int row, int col, ChessPiece piece) const {
     return false;
 }
 
+std::vector<Position> Board::getWinningLine(int row, int col, ChessPiece piece) const {
+    std::vector<Position> result;
+    if (piece == ChessPiece::Empty || !isValidPosition(row, col)) {
+        return result;
+    }
+    
+    // 四个方向：横向、纵向、左上 - 右下、右上 - 左下
+    static const int directions[4][2] = {
+        {0, 1},   // 横向
+        {1, 0},   // 纵向
+        {1, 1},   // 左上到右下
+        {1, -1}   // 右上到左下
+    };
+    
+    for (const auto& dir : directions) {
+        std::vector<Position> cells;
+        cells.push_back({row, col});
+        
+        const int signs[2] = {-1, 1};
+        for (int s = 0; s < 2; ++s) {
+            int sign = signs[s];
+            int r = row + dir[0] * sign;
+            int c = col + dir[1] * sign;
+            while (isValidPosition(r, c) && grid[r][c] == piece) {
+                cells.push_back({r, c});
+                r += dir[0] * sign;
+                c += dir[1] * sign;
+            }
+        }
+        
+        if (static_cast<int>(cells.size()) >= 5) {
+            return cells;
+        }
+    }
+    
+    return result;
+}
+
 int Board::countConsecutive(int row, int col, int deltaRow, int deltaCol, ChessPiece piece) const {
     int count = 1;  // 包含当前棋子
     
