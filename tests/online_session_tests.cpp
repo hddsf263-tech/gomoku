@@ -198,6 +198,192 @@ static void testDisconnect() {
     host.leaveSession();
 }
 
+// 测试 F/G/H：非法落子类型（越界 / 非回合 / 结束后）
+// 测试 F/G：非法落子（越界 / 非个人回合）
+static void testIllegalMoveKinds() {
+    std::printf("--- Test F/G: illegal move kinds ---\n");
+
+    // F: 越界。先由黑方落子轮到白方，白方再请求越界坐标。
+    {
+        GameEngine hostGame, clientGame;
+        OnlineSession host(hostGame);
+        OnlineSession client(clientGame);
+        QString reason;
+        QObject::connect(&client, &OnlineSession::moveRejected,
+                         [&](const QString& r) { reason = r; });
+        CHECK(host.startHost(0), "F host startHost(0)");
+        const quint16 port = host.port();
+        client.connectToHost(QStringLiteral("127.0.0.1"), port);
+        CHECK(waitUntil([&]() { return host.state() == OnlineState::Playing
+                                    && client.state() == OnlineState::Playing; }, 6000),
+              "F both reach Playing");
+        CHECK(host.localMove(7, 7), "F host black move");
+        CHECK(waitUntil([&]() { return clientGame.moveCount() == 1; }, 4000), "F client synced");
+        CHECK(client.localMove(99, 99), "F white sends out-of-range request");
+        CHECK(waitUntil([&]() { return !reason.isEmpty(); }, 4000), "F client received REJECT");
+        CHECK(reason == QStringLiteral("INVALID_POSITION"), "F reject reason=INVALID_POSITION");
+        CHECK(hostGame.moveCount() == 1, "F host did not commit out-of-range");
+        host.leaveSession();
+        client.leaveSession();
+    }
+
+    // G: 非个人回合。当前轮到黑方，白方尝试落子应在本地被拒绝（不发送）。
+    {
+        GameEngine hostGame, clientGame;
+        OnlineSession host(hostGame);
+        OnlineSession client(clientGame);
+        CHECK(host.startHost(0), "G host startHost(0)");
+        const quint16 port = host.port();
+        client.connectToHost(QStringLiteral("127.0.0.1"), port);
+        CHECK(waitUntil([&]() { return host.state() == OnlineState::Playing
+                                    && client.state() == OnlineState::Playing; }, 6000),
+              "G both reach Playing");
+        CHECK(!client.localMove(8, 8), "G white localMove rejected locally (not turn)");
+        CHECK(hostGame.moveCount() == 0, "G host board unchanged");
+        CHECK(clientGame.moveCount() == 0, "G client board unchanged");
+        host.leaveSession();
+        client.leaveSession();
+    }
+
+    // H: 游戏结束后不能再落子（客户端处于 GameOver，localMove 返回 false）
+    {
+        GameEngine hostGame, clientGame;
+        OnlineSession host(hostGame);
+        OnlineSession client(clientGame);
+        CHECK(host.startHost(0), "H host startHost(0)");
+        const quint16 port = host.port();
+        client.connectToHost(QStringLiteral("127.0.0.1"), port);
+        CHECK(waitUntil([&]() { return host.state() == OnlineState::Playing
+                                    && client.state() == OnlineState::Playing; }, 6000),
+              "H both reach Playing");
+        const int blackMoves[5][2] = {{7,3},{7,4},{7,5},{7,6},{7,7}};
+        const int whiteMoves[4][2] = {{0,0},{0,1},{0,2},{0,3}};
+        for (int i = 0; i < 4; i++) {
+            host.localMove(blackMoves[i][0], blackMoves[i][1]);
+            waitUntil([&]() { return clientGame.moveCount() == hostGame.moveCount(); }, 4000);
+            client.localMove(whiteMoves[i][0], whiteMoves[i][1]);
+            waitUntil([&]() { return hostGame.moveCount() == (2 * i + 2); }, 4000);
+        }
+        host.localMove(blackMoves[4][0], blackMoves[4][1]);
+        CHECK(waitUntil([&]() { return client.state() == OnlineState::GameOver; }, 4000),
+              "H client reached GameOver");
+        CHECK(!client.localMove(6, 6), "H client cannot move after game over");
+        host.leaveSession();
+        client.leaveSession();
+    }
+}// 测试 I：纵向五连获胜广播（网络 GAME_OVER）
+static void testVerticalWin() {
+    std::printf("--- Test I: vertical win broadcast ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+    CHECK(host.startHost(0), "I host startHost(0)");
+    const quint16 port = host.port();
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::Playing
+                                && client.state() == OnlineState::Playing; }, 6000),
+          "I both reach Playing");
+    const int blackMoves[5][2] = {{3,7},{4,7},{5,7},{6,7},{7,7}};
+    const int whiteMoves[4][2] = {{0,0},{0,1},{0,2},{0,3}};
+    for (int i = 0; i < 4; i++) {
+        host.localMove(blackMoves[i][0], blackMoves[i][1]);
+        waitUntil([&]() { return clientGame.moveCount() == hostGame.moveCount(); }, 4000);
+        client.localMove(whiteMoves[i][0], whiteMoves[i][1]);
+        waitUntil([&]() { return hostGame.moveCount() == (2 * i + 2); }, 4000);
+    }
+    host.localMove(blackMoves[4][0], blackMoves[4][1]);
+    CHECK(waitUntil([&]() { return clientGame.moveCount() == 9; }, 4000), "I client synced winning move");
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::GameOver
+                                && client.state() == OnlineState::GameOver; }, 4000),
+          "I both reach GameOver");
+    CHECK(hostGame.status() == GameStatus::BlackWin, "I host status BlackWin (vertical)");
+    CHECK(clientGame.status() == GameStatus::BlackWin, "I client status BlackWin (vertical)");
+    host.leaveSession();
+    client.leaveSession();
+}
+
+// 测试 J：主机主动关闭，客户端感知断线
+static void testHostCloses() {
+    std::printf("--- Test J: host closes -> client disconnect ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+    bool gone = false;
+    QObject::connect(&client, &OnlineSession::opponentDisconnected, [&]() { gone = true; });
+    CHECK(host.startHost(0), "J host startHost(0)");
+    const quint16 port = host.port();
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::Playing
+                                && client.state() == OnlineState::Playing; }, 6000),
+          "J both reach Playing");
+    host.leaveSession();
+    CHECK(waitUntil([&]() { return gone; }, 4000), "J client observed opponentDisconnected");
+    client.leaveSession();
+}
+
+// 测试 K：一方拒绝重赛
+static void testRematchDeclined() {
+    std::printf("--- Test K: rematch declined ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+    bool declined = false;
+    QObject::connect(&host, &OnlineSession::rematchDeclined, [&]() { declined = true; });
+    CHECK(host.startHost(0), "K host startHost(0)");
+    const quint16 port = host.port();
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::Playing
+                                && client.state() == OnlineState::Playing; }, 6000),
+          "K both reach Playing");
+    const int blackMoves[5][2] = {{7,3},{7,4},{7,5},{7,6},{7,7}};
+    const int whiteMoves[4][2] = {{0,0},{0,1},{0,2},{0,3}};
+    for (int i = 0; i < 4; i++) {
+        host.localMove(blackMoves[i][0], blackMoves[i][1]);
+        waitUntil([&]() { return clientGame.moveCount() == hostGame.moveCount(); }, 4000);
+        client.localMove(whiteMoves[i][0], whiteMoves[i][1]);
+        waitUntil([&]() { return hostGame.moveCount() == (2 * i + 2); }, 4000);
+    }
+    host.localMove(blackMoves[4][0], blackMoves[4][1]);
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::GameOver
+                                && client.state() == OnlineState::GameOver; }, 4000),
+          "K both reach GameOver");
+    host.requestRematch();
+    client.answerRematch(false);
+    CHECK(waitUntil([&]() { return declined; }, 4000), "K host saw rematchDeclined");
+    CHECK(hostGame.moveCount() != 0, "K board not reset after decline");
+    host.leaveSession();
+    client.leaveSession();
+}// 测试 L：终局后一方断线，对方进入 OpponentDisconnected
+static void testDisconnectAfterGameOver() {
+    std::printf("--- Test L: disconnect after game over ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+    bool gone = false;
+    QObject::connect(&host, &OnlineSession::opponentDisconnected, [&]() { gone = true; });
+    CHECK(host.startHost(0), "L host startHost(0)");
+    const quint16 port = host.port();
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::Playing
+                                && client.state() == OnlineState::Playing; }, 6000),
+          "L both reach Playing");
+    const int blackMoves[5][2] = {{7,3},{7,4},{7,5},{7,6},{7,7}};
+    const int whiteMoves[4][2] = {{0,0},{0,1},{0,2},{0,3}};
+    for (int i = 0; i < 4; i++) {
+        host.localMove(blackMoves[i][0], blackMoves[i][1]);
+        waitUntil([&]() { return clientGame.moveCount() == hostGame.moveCount(); }, 4000);
+        client.localMove(whiteMoves[i][0], whiteMoves[i][1]);
+        waitUntil([&]() { return hostGame.moveCount() == (2 * i + 2); }, 4000);
+    }
+    host.localMove(blackMoves[4][0], blackMoves[4][1]);
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::GameOver
+                                && client.state() == OnlineState::GameOver; }, 4000),
+          "L both reach GameOver");
+    client.leaveSession();
+    CHECK(waitUntil([&]() { return gone; }, 4000), "L host saw opponentDisconnected after game over");
+    host.leaveSession();
+}
+
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
     testProtocol();
@@ -205,8 +391,15 @@ int main(int argc, char* argv[]) {
     testIllegalMoveRejected();
     testWinAndRematch();
     testDisconnect();
+    testIllegalMoveKinds();
+    testVerticalWin();
+    testHostCloses();
+    testRematchDeclined();
+    testDisconnectAfterGameOver();
     std::printf("====================================\n");
     std::printf("TOTAL checks: %d  FAILS: %d\n", g_checks, g_fails);
     std::fflush(stdout);
     return g_fails == 0 ? 0 : 1;
 }
+
+

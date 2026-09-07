@@ -27,3 +27,8 @@ Thumbs.db
 # IDE & local build dirs
 build_*/
 .qtcreator/
+
+# Release deployment packages (not source, keep out of VCS)
+run_deploy/
+整合1.0/
+整合3.0/

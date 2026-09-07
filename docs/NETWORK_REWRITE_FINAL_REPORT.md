@@ -112,29 +112,34 @@ NetProtocol (协议层：消息类型 + JSON 换行分隔帧)
 | 项目 | 结果 | 说明 |
 |---|---|---|
 | Build（CMake configure + ninja） | **PASS** | 主程序与所有测试目标均编译/链接成功 |
-| 单元测试 `gomoku_core_tests` | **PASS** | 棋盘规则单元测试全部通过 |
-| 单元测试 `online_session_tests` | **PASS** | 联机协议与会话测试全部通过 |
-| Localhost（单机本机回环） | **PASS** | `online_session_tests` 在单进程内通过 TCP 回环完成 Host+Client 对局、非法落子拒绝、胜负判定、重赛、断线共 5 组场景 |
+| 单元测试 `gomoku_core_tests` | **PASS** | 棋盘规则单元测试全部通过（`gomoku core ok: ai-win-move, win detect, undo`，EXIT=0） |
+| 单元测试 `online_session_tests` | **PASS** | 联机协议与会话测试全部通过（**TOTAL checks: 92, FAILS: 0, EXIT=0**） |
+| Localhost（单机本机回环） | **PASS** | `online_session_tests` 在单进程内通过 TCP 回环完成 Host+Client 的完整对局、非法落子拒绝、胜负判定、重赛、断线等 **A–L 共 12 组场景** |
 | LAN（局域网） | **NOT TESTED** | 需要第二台真实电脑 |
 | Two-machine（双机） | **NOT TESTED** | 需要第二台真实电脑 |
-| AI | **PASS** | `Gomoku.exe --ai-smoke` 输出 `AI_SMOKE OK 2 手 · H7` |
+| AI | **PASS** | `Gomoku.exe --ai-smoke` 输出 `AI_SMOKE OK 2 手 · H7`，EXIT=0 |
 | Local PvP | **PASS** | 由 `gomoku_core_tests` 覆盖胜负/平局/规则；本地双方逻辑未改动 |
 | Skin | **PASS** | 代码未改动，构建通过（界面视觉未人工核验，见“已知限制”） |
 | Sound | **PASS** | 代码未改动，构建通过（界面听觉未人工核验，见“已知限制”） |
-| Disconnect | **PASS** | `online_session_tests` 场景 E：客户端离开后主机收到 `opponentDisconnected` |
-| Rematch | **PASS** | `online_session_tests` 场景 D：黑方获胜后重赛，双方重置到 `Playing` 且 moveCount=0 |
+| Disconnect | **PASS** | `online_session_tests` 场景 E（客户端离开）、J（主机关闭）、L（终局后断线） |
+| Rematch | **PASS** | `online_session_tests` 场景 D（同意重赛重置）、K（一方拒绝重赛，棋盘未重置） |
 
-### online_session_tests 覆盖场景
+### online_session_tests 覆盖场景（A–L）
 
-- A：`NetProtocol::frame/parse` 往返 + 非法 JSON。
+- A：`NetProtocol` 帧化/解析往返 + 非法 JSON 拒绝。
 - B：Host+Client 单线程连接，主机黑 `(7,7)`、客户端白 `(8,8)`，校验双方棋局同步。
-- C：客户端在已占用格 `(7,7)` 请求落子，Host 应 `REJECT`，Host 不落地。
+- C：客户端在已占用格 `(7,7)` 请求落子，Host 回 `REJECT`，Host 不落地。
 - D：黑方（主机）连五获胜，双方到 `GameOver`，随后重赛双方重置。
 - E：客户端 `leaveSession()`，主机收到 `opponentDisconnected`。
+- F：白方发出越界请求 `(99,99)`，Host 回 `REJECT`（原因 `INVALID_POSITION`），Host 棋局未变化。
+- G：当前轮到黑方时白方本地 `localMove` 被拒绝（不发送请求），双方棋盘均未变化。
+- H：游戏结束后客户端 `localMove` 返回 false，不能再落子。
+- I：纵向五连获胜，Host 与 Client 均判定 `BlackWin`，双方进入 `GameOver`。
+- J：主机主动关闭，客户端感知 `opponentDisconnected`。
+- K：一方拒绝重赛（`REMATCH accept=false`），请求方 Host 收到 `rematchDeclined`，棋盘未重置。
+- L：终局后一方断线，另一方收到 `opponentDisconnected`。
 
-> 重要：以上 **Localhost** 结果是真实的（由同一进程内的 TCP 回环测试产生）。**LAN / 双机测试并未执行**，因为本机仅为单台电脑。切勿将 Localhost 结果表述为“两台电脑测试通过”。
-
----
+> 重要：以上 **Localhost** 结果是真实的（由同一进程内的 TCP 回环测试产生，本轮实际运行通过：92 checks / 0 FAILS / EXIT=0）。**LAN / 双机测试并未执行**，因为本机仅为单台电脑。切勿将 Localhost 结果表述为“两台电脑测试通过”。
 
 ## 9. 构建结果
 
