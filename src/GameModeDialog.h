@@ -9,6 +9,7 @@
 #include <QGroupBox>
 #include <QSpinBox>
 #include <QLineEdit>
+#include <QCheckBox>
 #include <QString>
 #include <QtGlobal>
 
@@ -41,6 +42,11 @@ struct GameConfig {
     QString networkHost = "127.0.0.1";
     /// @brief 端口
     quint16 networkPort = 12345;
+
+    /// @brief 是否启用每步计时
+    bool enableTimer = true;
+    /// @brief 每步允许时间（秒）
+    int moveTimeSeconds = 30;
 };
 
 /// @brief 新游戏模式选择对话框
@@ -74,6 +80,10 @@ private:
     QRadioButton* clientRadio;
     QLineEdit* hostAddressEdit;
     QSpinBox* portSpinBox;
+
+    QGroupBox* timerGroupBox;
+    QCheckBox* timerCheckBox;
+    QSpinBox* timerSecondsSpinBox;
 
     QPushButton* okButton;
     QPushButton* cancelButton;

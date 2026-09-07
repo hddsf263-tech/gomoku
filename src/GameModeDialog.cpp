@@ -88,6 +88,28 @@ void GameModeDialog::setupUI() {
     networkGroupBox->setEnabled(false);
     mainLayout->addWidget(networkGroupBox);
 
+    timerGroupBox = new QGroupBox("计时设置", this);
+    auto* timerLayout = new QVBoxLayout(timerGroupBox);
+
+    timerCheckBox = new QCheckBox("开启计时（超时判负）", this);
+    timerCheckBox->setChecked(true);
+    timerLayout->addWidget(timerCheckBox);
+
+    auto* timerRow = new QHBoxLayout;
+    timerRow->addWidget(new QLabel("每步时间：", this));
+    timerSecondsSpinBox = new QSpinBox(this);
+    timerSecondsSpinBox->setRange(5, 600);
+    timerSecondsSpinBox->setValue(30);
+    timerSecondsSpinBox->setSuffix(" 秒");
+    timerRow->addWidget(timerSecondsSpinBox, 1);
+    timerLayout->addLayout(timerRow);
+
+    mainLayout->addWidget(timerGroupBox);
+
+    connect(timerCheckBox, &QCheckBox::toggled, this, [this](bool checked) {
+        timerSecondsSpinBox->setEnabled(checked);
+    });
+
     mainLayout->addStretch();
 
     auto* buttonBox = new QDialogButtonBox(
@@ -144,6 +166,9 @@ GameConfig GameModeDialog::getConfig() const {
     config.networkIsHost = hostRadio->isChecked();
     config.networkHost = hostAddressEdit->text().trimmed();
     config.networkPort = static_cast<quint16>(portSpinBox->value());
+
+    config.enableTimer = timerCheckBox->isChecked();
+    config.moveTimeSeconds = timerSecondsSpinBox->value();
 
     return config;
 }

@@ -15,6 +15,8 @@ BoardWidget::BoardWidget(QWidget *parent)
     , cellSize(30)
     , margin(20)
     , pieceRadius(13)
+    , replayMode(false)
+    , replayStep(-1)
 {
     setMinimumSize(400, 400);
     setMouseTracking(true);
@@ -25,6 +27,22 @@ void BoardWidget::setGame(Gomoku::Game* gamePtr) {
 }
 
 void BoardWidget::updateBoard() {
+    update();
+}
+
+void BoardWidget::setReplayMode(bool enabled) {
+    replayMode = enabled;
+    if (enabled && replayStep < 0) {
+        replayStep = 0;
+    }
+    if (!enabled) {
+        replayStep = -1;
+    }
+    update();
+}
+
+void BoardWidget::setReplayStep(int step) {
+    replayStep = step;
     update();
 }
 
@@ -89,56 +107,82 @@ void BoardWidget::drawGrid(QPainter& painter) {
 }
 
 void BoardWidget::drawPieces(QPainter& painter) {
-    const auto& board = game->getBoard();
-    
-    for (int row = 0; row < Gomoku::Board::SIZE; ++row) {
-        for (int col = 0; col < Gomoku::Board::SIZE; ++col) {
-            auto piece = board.getPiece(row, col);
-            if (piece != Gomoku::ChessPiece::Empty) {
-                auto [x, y] = gridToPos(row, col);
-                
-                // 绘制棋子阴影
-                painter.setPen(Qt::NoPen);
-                painter.setBrush(QColor(0, 0, 0, 80));
-                painter.drawEllipse(x - pieceRadius + 2, y - pieceRadius + 2, 
-                                   pieceRadius * 2, pieceRadius * 2);
-                
-                // 绘制棋子
-                if (piece == Gomoku::ChessPiece::Black) {
-                    QRadialGradient gradient(x - 3, y - 3, pieceRadius * 2);
-                    gradient.setColorAt(0, QColor(80, 80, 80));
-                    gradient.setColorAt(1, QColor(0, 0, 0));
-                    painter.setBrush(gradient);
-                } else {
-                    QRadialGradient gradient(x - 3, y - 3, pieceRadius * 2);
-                    gradient.setColorAt(0, QColor(255, 255, 255));
-                    gradient.setColorAt(1, QColor(200, 200, 200));
-                    painter.setBrush(gradient);
-                }
-                
-                painter.drawEllipse(x - pieceRadius, y - pieceRadius, 
-                                   pieceRadius * 2, pieceRadius * 2);
-            }
-        }
+    const auto& history = game->getBoard().getMoveHistory();
+    int limit = replayMode ? replayStep : static_cast<int>(history.size());
+    if (limit < 0) {
+        limit = 0;
     }
+    if (limit > static_cast<int>(history.size())) {
+        limit = static_cast<int>(history.size());
+    }
+
+    for (int i = 0; i < limit; ++i) {
+        const auto& mv = history[i];
+        Gomoku::ChessPiece piece =
+            (i % 2 == 0) ? Gomoku::ChessPiece::Black : Gomoku::ChessPiece::White;
+        drawPiece(painter, mv.row, mv.col, piece);
+    }
+
+}
+
+void BoardWidget::drawPiece(QPainter& painter, int row, int col,
+                            Gomoku::ChessPiece piece) {
+    auto [x, y] = gridToPos(row, col);
+
+    // 绘制棋子阴影
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(QColor(0, 0, 0, 80));
+    painter.drawEllipse(x - pieceRadius + 2, y - pieceRadius + 2,
+                        pieceRadius * 2, pieceRadius * 2);
+
+    // 绘制棋子
+    if (piece == Gomoku::ChessPiece::Black) {
+        QRadialGradient gradient(x - 3, y - 3, pieceRadius * 2);
+        gradient.setColorAt(0, QColor(80, 80, 80));
+        gradient.setColorAt(1, QColor(0, 0, 0));
+        painter.setBrush(gradient);
+    } else {
+        QRadialGradient gradient(x - 3, y - 3, pieceRadius * 2);
+        gradient.setColorAt(0, QColor(255, 255, 255));
+        gradient.setColorAt(1, QColor(200, 200, 200));
+        painter.setBrush(gradient);
+    }
+
+    painter.drawEllipse(x - pieceRadius, y - pieceRadius,
+                        pieceRadius * 2, pieceRadius * 2);
 }
 
 void BoardWidget::drawLastMoveMarker(QPainter& painter) {
-    const auto& board = game->getBoard();
-    auto lastMove = board.getLastMove();
-    
+    const auto& history = game->getBoard().getMoveHistory();
+
+    std::optional<Gomoku::Position> lastMove;
+    if (replayMode) {
+        if (replayStep > 0 && replayStep <= static_cast<int>(history.size())) {
+            lastMove = history[replayStep - 1];
+        }
+    } else {
+        lastMove = game->getBoard().getLastMove();
+    }
+
     if (lastMove.has_value()) {
         auto [x, y] = gridToPos(lastMove->row, lastMove->col);
-        
-        // 绘制红色标记
-        painter.setPen(QPen(QColor(255, 0, 0), 2));
+
+        // 高亮光圈：围绕最后一步棋子绘制半透明圆环
         painter.setBrush(Qt::NoBrush);
-        painter.drawRect(x - 4, y - 4, 8, 8);
+        QPen glow(QColor(255, 190, 40, 220), 3);
+        painter.setPen(glow);
+        painter.drawEllipse(x - pieceRadius - 3, y - pieceRadius - 3,
+                            (pieceRadius + 3) * 2, (pieceRadius + 3) * 2);
+
+        // 中心红色小标记，便于快速定位
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(255, 60, 60));
+        painter.drawEllipse(x - 3, y - 3, 6, 6);
     }
 }
 
 void BoardWidget::mousePressEvent(QMouseEvent *event) {
-    if (!game || event->button() != Qt::LeftButton) {
+    if (!game || replayMode || event->button() != Qt::LeftButton) {
         return;
     }
     

@@ -108,6 +108,36 @@ GameStateSnapshot Game::getGameStateSnapshot() const {
     return snapshot;
 }
 
+int Game::getMoveCount() const {
+    return static_cast<int>(board.getMoveHistory().size());
+}
+
+void Game::forfeit(ChessPiece loser) {
+    if (state != GameState::InProgress) {
+        return;
+    }
+
+    state = (loser == ChessPiece::Black)
+                ? GameState::WhiteWin
+                : GameState::BlackWin;
+
+    if (stateCallback) {
+        stateCallback(state);
+    }
+}
+
+void Game::declareDraw() {
+    if (state != GameState::InProgress) {
+        return;
+    }
+
+    state = GameState::Draw;
+
+    if (stateCallback) {
+        stateCallback(state);
+    }
+}
+
 void Game::switchPlayer() {
     currentPlayer = (currentPlayer == ChessPiece::Black) ? ChessPiece::White : ChessPiece::Black;
 }

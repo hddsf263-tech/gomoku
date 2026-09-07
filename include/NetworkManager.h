@@ -19,6 +19,7 @@ public:
     using ErrorCallback = std::function<void(const QString&)>;
     using MoveCallback = std::function<void(int, int)>;
     using ColorCallback = std::function<void(int)>;  ///< 0=黑, 1=白
+    using BoolCallback = std::function<void(bool)>;  ///< 接受/拒绝
 
     NetworkManager();
     ~NetworkManager();
@@ -36,6 +37,9 @@ public:
     void sendHello(int color);
     void sendMove(int row, int col);
     void sendReset();
+    void sendSurrender();
+    void sendDrawOffer();
+    void sendDrawResponse(bool accept);
 
     void onConnected(VoidCallback cb) { onConnected_ = std::move(cb); }
     void onDisconnected(VoidCallback cb) { onDisconnected_ = std::move(cb); }
@@ -43,6 +47,9 @@ public:
     void onMove(MoveCallback cb) { onMove_ = std::move(cb); }
     void onHello(ColorCallback cb) { onHello_ = std::move(cb); }
     void onReset(VoidCallback cb) { onReset_ = std::move(cb); }
+    void onSurrender(VoidCallback cb) { onSurrender_ = std::move(cb); }
+    void onDrawOffer(VoidCallback cb) { onDrawOffer_ = std::move(cb); }
+    void onDrawResponse(BoolCallback cb) { onDrawResponse_ = std::move(cb); }
 
 private:
     void attachSocket(QTcpSocket* socket);
@@ -62,6 +69,9 @@ private:
     MoveCallback onMove_;
     ColorCallback onHello_;
     VoidCallback onReset_;
+    VoidCallback onSurrender_;
+    VoidCallback onDrawOffer_;
+    BoolCallback onDrawResponse_;
 };
 
 } // namespace Gomoku

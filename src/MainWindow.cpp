@@ -14,10 +14,24 @@ MainWindow::MainWindow(QWidget *parent)
     , boardWidget(nullptr)
     , statusLabel(nullptr)
     , currentPlayerLabel(nullptr)
+    , moveCountLabel(nullptr)
+    , timerLabel(nullptr)
     , newGameButton(nullptr)
     , undoButton(nullptr)
+    , surrenderButton(nullptr)
+    , drawButton(nullptr)
+    , replayButton(nullptr)
+    , replayControls(nullptr)
+    , replayPrevButton(nullptr)
+    , replayNextButton(nullptr)
+    , replayExitButton(nullptr)
     , m_isAIThinking(false)
     , m_aiWatcher(nullptr)
+    , m_moveTimer(nullptr)
+    , m_moveTimeSeconds(30)
+    , m_currentTimeLeft(30)
+    , m_drawPending(false)
+    , m_enableTimer(true)
     , m_myColor(Gomoku::ChessPiece::Black)
 {
     setupUI();
@@ -30,6 +44,9 @@ MainWindow::MainWindow(QWidget *parent)
     game.onMoveMade([this](int, int) {
         boardWidget->updateBoard();
         updateStatusBar();
+        updateMoveCount();
+        updateButtons();
+        resetMoveTimer();
 
         if (!m_isAIThinking &&
             game.isAITurn() &&
@@ -56,8 +73,22 @@ MainWindow::MainWindow(QWidget *parent)
     network.onReset([this]() {
         onNetworkReset();
     });
+    network.onSurrender([this]() {
+        onNetworkSurrender();
+    });
+    network.onDrawOffer([this]() {
+        onNetworkDrawOffer();
+    });
+    network.onDrawResponse([this](bool accept) {
+        onNetworkDrawResponse(accept);
+    });
+
+    m_moveTimer = new QTimer(this);
+    m_moveTimer->setInterval(1000);
+    connect(m_moveTimer, &QTimer::timeout, this, &MainWindow::onTimerTick);
 
     updateStatusBar();
+    updateButtons();
 }
 
 MainWindow::~MainWindow() {
@@ -91,7 +122,56 @@ void MainWindow::setupUI() {
     statusLabel->setStyleSheet("font-size: 14px; padding: 5px;");
     controlLayout->addWidget(statusLabel);
 
+    moveCountLabel = new QLabel("步数：0", this);
+    moveCountLabel->setStyleSheet("font-size: 14px; padding: 5px;");
+    controlLayout->addWidget(moveCountLabel);
+
+    timerLabel = new QLabel("计时：未开启", this);
+    timerLabel->setStyleSheet("font-size: 14px; padding: 5px;");
+    controlLayout->addWidget(timerLabel);
+
     controlLayout->addStretch();
+
+    surrenderButton = new QPushButton("投降", this);
+    surrenderButton->setMinimumHeight(36);
+    surrenderButton->setStyleSheet("font-size: 14px; padding: 8px;");
+    connect(surrenderButton, &QPushButton::clicked, this, &MainWindow::onSurrenderClicked);
+    controlLayout->addWidget(surrenderButton);
+
+    drawButton = new QPushButton("求和棋", this);
+    drawButton->setMinimumHeight(36);
+    drawButton->setStyleSheet("font-size: 14px; padding: 8px;");
+    connect(drawButton, &QPushButton::clicked, this, &MainWindow::onDrawClicked);
+    controlLayout->addWidget(drawButton);
+
+    replayButton = new QPushButton("回放对局", this);
+    replayButton->setMinimumHeight(36);
+    replayButton->setStyleSheet("font-size: 14px; padding: 8px;");
+    connect(replayButton, &QPushButton::clicked, this, &MainWindow::onReplayClicked);
+    controlLayout->addWidget(replayButton);
+
+    replayControls = new QWidget(this);
+    auto* replayLayout = new QHBoxLayout(replayControls);
+    replayLayout->setContentsMargins(0, 0, 0, 0);
+    replayLayout->setSpacing(6);
+
+    replayPrevButton = new QPushButton("◀", this);
+    replayPrevButton->setFixedHeight(36);
+    connect(replayPrevButton, &QPushButton::clicked, this, &MainWindow::onReplayStepPrev);
+    replayLayout->addWidget(replayPrevButton);
+
+    replayNextButton = new QPushButton("▶", this);
+    replayNextButton->setFixedHeight(36);
+    connect(replayNextButton, &QPushButton::clicked, this, &MainWindow::onReplayStepNext);
+    replayLayout->addWidget(replayNextButton);
+
+    replayExitButton = new QPushButton("退出回放", this);
+    replayExitButton->setFixedHeight(36);
+    connect(replayExitButton, &QPushButton::clicked, this, &MainWindow::onReplayExit);
+    replayLayout->addWidget(replayExitButton);
+
+    replayControls->hide();
+    controlLayout->addWidget(replayControls);
 
     newGameButton = new QPushButton("新游戏", this);
     newGameButton->setMinimumHeight(40);
@@ -129,6 +209,11 @@ void MainWindow::createMenus() {
     QAction* undoAction = gameMenu->addAction("悔棋(&U)");
     connect(undoAction, &QAction::triggered, this, &MainWindow::onUndo);
 
+    gameMenu->addSeparator();
+
+    QAction* statsAction = gameMenu->addAction("战绩统计(&S)");
+    connect(statsAction, &QAction::triggered, this, &MainWindow::onShowStats);
+
     QMenu* helpMenu = menuBar()->addMenu("帮助(&H)");
 
     QAction* aboutAction = helpMenu->addAction("关于(&A)");
@@ -152,8 +237,15 @@ void MainWindow::onNewGame() {
             game.startNewGame();
             game.setPlayerType(Gomoku::ChessPiece::Black, Gomoku::PlayerType::Human);
             game.setPlayerType(Gomoku::ChessPiece::White, Gomoku::PlayerType::Human);
+            m_drawPending = false;
+            m_currentTimeLeft = m_moveTimeSeconds;
             boardWidget->updateBoard();
+            boardWidget->setEnabled(true);
             updateStatusBar();
+            updateMoveCount();
+            updateButtons();
+            updateTimerLabel();
+            startMoveTimer();
             return;
         }
         // 已断开：关闭网络实例，让用户回到模式选择
@@ -173,6 +265,10 @@ void MainWindow::startNewGameWithConfig(const Gomoku::GameConfig& config) {
     }
 
     m_config = config;
+    m_enableTimer = config.enableTimer;
+    m_moveTimeSeconds = config.moveTimeSeconds;
+    m_currentTimeLeft = m_moveTimeSeconds;
+    m_drawPending = false;
 
     if (config.isNetwork) {
         startNetworkGame(config);
@@ -212,6 +308,9 @@ void MainWindow::startNewGameWithConfig(const Gomoku::GameConfig& config) {
 
     boardWidget->updateBoard();
     updateStatusBar();
+    updateMoveCount();
+    updateButtons();
+    startMoveTimer();
 
     if (config.isHumanVsAI &&
         config.humanColor == Gomoku::PlayerColor::White) {
@@ -229,6 +328,11 @@ void MainWindow::startNetworkGame(const Gomoku::GameConfig& config) {
     boardWidget->setEnabled(false);
     undoButton->setEnabled(false);
     boardWidget->updateBoard();
+    m_currentTimeLeft = m_moveTimeSeconds;
+    updateMoveCount();
+    updateButtons();
+    stopMoveTimer();
+    updateTimerLabel();
 
     if (config.networkIsHost) {
         m_myColor = Gomoku::ChessPiece::Black;
@@ -376,6 +480,19 @@ void MainWindow::onPositionClicked(int row, int col) {
 
 void MainWindow::onGameStateChanged(Gomoku::GameState state) {
     updateStatusBar();
+    updateMoveCount();
+
+    bool ended = (state == Gomoku::GameState::BlackWin ||
+                  state == Gomoku::GameState::WhiteWin ||
+                  state == Gomoku::GameState::Draw);
+
+    if (ended) {
+        stopMoveTimer();
+        recordGameResult(state);
+        boardWidget->setEnabled(false);
+    }
+
+    updateButtons();
 
     switch (state) {
         case Gomoku::GameState::BlackWin:
@@ -396,30 +513,39 @@ void MainWindow::onGameStateChanged(Gomoku::GameState state) {
 }
 
 void MainWindow::onNetworkConnected() {
-    boardWidget->setEnabled(true);
     undoButton->setEnabled(false);
+    m_drawPending = false;
 
     if (network.role() == Gomoku::NetworkManager::Role::Host) {
         m_myColor = Gomoku::ChessPiece::Black;
         network.sendHello(0);
-        statusLabel->setText("对手已加入，黑方先行");
+        statusLabel->setText("对手已加入，等待确认...");
         currentPlayerLabel->setText("主机 · 黑方");
     } else {
         m_myColor = Gomoku::ChessPiece::White;
         network.sendHello(1);
-        statusLabel->setText("已连接到主机，等待黑方落子");
+        statusLabel->setText("已连接到主机，等待确认...");
         currentPlayerLabel->setText("客户端 · 白方");
     }
 
+    // 棋盘启用推迟到收到对手 HELLO 确认之后，避免回合/颜色竞态。
+    boardWidget->setEnabled(false);
     updateStatusBar();
+    updateButtons();
+    updateTimerLabel();
 }
 
 void MainWindow::onNetworkDisconnected() {
     boardWidget->setEnabled(false);
     undoButton->setEnabled(false);
+    stopMoveTimer();
+    if (m_config.isNetwork) {
+        network.disconnectPeer();
+    }
     statusLabel->setText("对手已断开连接");
     currentPlayerLabel->setText("连接断开");
     QMessageBox::information(this, "提示", "对手已断开连接，请重新开始游戏。");
+    updateButtons();
 }
 
 void MainWindow::onNetworkError(const QString& message) {
@@ -445,7 +571,18 @@ void MainWindow::onNetworkHello(int color) {
     // color 是对方颜色，自己取相反颜色，保证两端一致。
     m_myColor = (color == 0) ? Gomoku::ChessPiece::White
                              : Gomoku::ChessPiece::Black;
+
+    // 双方颜色确认完成后才启用棋盘，开始计时。
+    m_drawPending = false;
+    m_currentTimeLeft = m_moveTimeSeconds;
+    boardWidget->setEnabled(true);
+    if (m_config.isNetwork) {
+        statusLabel->setText("对局开始，双方回合已确认");
+    }
     updateStatusBar();
+    updateButtons();
+    updateTimerLabel();
+    startMoveTimer();
 }
 
 void MainWindow::onNetworkReset() {
@@ -453,7 +590,61 @@ void MainWindow::onNetworkReset() {
     game.setPlayerType(Gomoku::ChessPiece::Black, Gomoku::PlayerType::Human);
     game.setPlayerType(Gomoku::ChessPiece::White, Gomoku::PlayerType::Human);
     boardWidget->updateBoard();
+    m_drawPending = false;
+    m_currentTimeLeft = m_moveTimeSeconds;
+    boardWidget->setEnabled(true);
     updateStatusBar();
+    updateMoveCount();
+    updateButtons();
+    updateTimerLabel();
+    startMoveTimer();
+}
+
+void MainWindow::onNetworkSurrender() {
+    if (game.getState() != Gomoku::GameState::InProgress) {
+        return;
+    }
+
+    // 对方认输：对方颜色作为败方，自己获胜。
+    Gomoku::ChessPiece opponent =
+        (m_myColor == Gomoku::ChessPiece::Black) ? Gomoku::ChessPiece::White
+                                                  : Gomoku::ChessPiece::Black;
+    game.forfeit(opponent);
+    statusLabel->setText("对方认输，你获胜！");
+    updateButtons();
+}
+
+void MainWindow::onNetworkDrawOffer() {
+    if (game.getState() != Gomoku::GameState::InProgress) {
+        return;
+    }
+
+    QMessageBox::StandardButton ret = QMessageBox::question(
+        this, "求和棋", "对方提出和棋申请，是否同意？",
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+
+    if (ret == QMessageBox::Yes) {
+        network.sendDrawResponse(true);
+        game.declareDraw();
+        statusLabel->setText("已同意和棋，本局平局");
+    } else {
+        network.sendDrawResponse(false);
+        statusLabel->setText("已拒绝和棋，对局继续");
+    }
+    updateButtons();
+}
+
+void MainWindow::onNetworkDrawResponse(bool accept) {
+    if (accept) {
+        if (game.getState() == Gomoku::GameState::InProgress) {
+            game.declareDraw();
+        }
+        statusLabel->setText("对方同意和棋，本局平局");
+    } else {
+        statusLabel->setText("对方拒绝了和棋，对局继续");
+    }
+    m_drawPending = false;
+    updateButtons();
 }
 
 void MainWindow::setAIThinkingState(bool thinking) {
@@ -511,4 +702,307 @@ void MainWindow::updateStatusBar() {
             currentPlayerLabel->setText("平局");
             break;
     }
+}
+
+void MainWindow::updateMoveCount() {
+    if (!moveCountLabel) {
+        return;
+    }
+    if (boardWidget && boardWidget->isReplayMode()) {
+        return;
+    }
+    moveCountLabel->setText(QString("步数：%1").arg(game.getMoveCount()));
+}
+
+void MainWindow::updateTimerLabel() {
+    if (!timerLabel) {
+        return;
+    }
+
+    if (!m_enableTimer) {
+        timerLabel->setText("计时：未开启");
+        return;
+    }
+
+    Gomoku::GameState state = game.getState();
+    if (state == Gomoku::GameState::NotStarted) {
+        timerLabel->setText("计时：等待开始");
+        return;
+    }
+    if (state != Gomoku::GameState::InProgress) {
+        timerLabel->setText("计时：对局结束");
+        return;
+    }
+
+    Gomoku::ChessPiece cur = game.getCurrentPlayer();
+    QString side = (cur == Gomoku::ChessPiece::Black) ? "黑方" : "白方";
+    if (m_config.isNetwork && network.isConnected()) {
+        side = (cur == m_myColor) ? "你的回合" : "对方回合";
+    }
+    timerLabel->setText(QString("%1 剩余 %2s").arg(side).arg(m_currentTimeLeft));
+}
+
+void MainWindow::updateReplayStepLabel() {
+    if (!moveCountLabel) {
+        return;
+    }
+    if (boardWidget && boardWidget->isReplayMode()) {
+        int total = game.getMoveCount();
+        moveCountLabel->setText(
+            QString("回放：%1 / %2").arg(boardWidget->getReplayStep()).arg(total));
+    } else {
+        updateMoveCount();
+    }
+}
+
+void MainWindow::updateButtons() {
+    if (!surrenderButton) {
+        return;
+    }
+
+    bool inProgress = (game.getState() == Gomoku::GameState::InProgress);
+    bool ended =
+        (game.getState() == Gomoku::GameState::BlackWin ||
+         game.getState() == Gomoku::GameState::WhiteWin ||
+         game.getState() == Gomoku::GameState::Draw);
+    bool inReplay = (boardWidget && boardWidget->isReplayMode());
+
+    surrenderButton->setEnabled(inProgress);
+    drawButton->setEnabled(inProgress && !m_drawPending);
+    replayButton->setEnabled(ended && game.getMoveCount() > 0 && !inReplay);
+    newGameButton->setEnabled(true);
+
+    if (m_config.isNetwork) {
+        undoButton->setEnabled(false);
+    } else {
+        undoButton->setEnabled(inProgress && game.getMoveCount() > 0 && !inReplay);
+    }
+}
+
+void MainWindow::resetMoveTimer() {
+    m_currentTimeLeft = m_moveTimeSeconds;
+    updateTimerLabel();
+}
+
+void MainWindow::startMoveTimer() {
+    if (!m_enableTimer) {
+        updateTimerLabel();
+        return;
+    }
+    if (m_moveTimer && !m_moveTimer->isActive()) {
+        m_moveTimer->start();
+    }
+}
+
+void MainWindow::stopMoveTimer() {
+    if (m_moveTimer && m_moveTimer->isActive()) {
+        m_moveTimer->stop();
+    }
+    updateTimerLabel();
+}
+
+void MainWindow::onTimerTick() {
+    if (!m_enableTimer) {
+        return;
+    }
+
+    if (game.getState() != Gomoku::GameState::InProgress) {
+        stopMoveTimer();
+        return;
+    }
+
+    bool shouldTime = false;
+    if (m_config.isNetwork) {
+        shouldTime = network.isConnected() &&
+                     (game.getCurrentPlayer() == m_myColor);
+    } else {
+        shouldTime =
+            (game.getPlayerType(game.getCurrentPlayer()) ==
+             Gomoku::PlayerType::Human);
+    }
+
+    if (!shouldTime) {
+        m_currentTimeLeft = m_moveTimeSeconds;
+        updateTimerLabel();
+        return;
+    }
+
+    if (m_currentTimeLeft > 0) {
+        --m_currentTimeLeft;
+        updateTimerLabel();
+    }
+    if (m_currentTimeLeft <= 0) {
+        handleTimeout();
+    }
+}
+
+void MainWindow::handleTimeout() {
+    if (game.getState() != Gomoku::GameState::InProgress) {
+        return;
+    }
+
+    stopMoveTimer();
+    Gomoku::ChessPiece loser = game.getCurrentPlayer();
+    if (m_config.isNetwork) {
+        loser = m_myColor;
+    }
+    game.forfeit(loser);
+    statusLabel->setText("超时判负");
+    if (m_config.isNetwork && network.isConnected()) {
+        network.sendSurrender();
+    }
+    updateButtons();
+}
+
+void MainWindow::onSurrenderClicked() {
+    if (game.getState() != Gomoku::GameState::InProgress) {
+        return;
+    }
+    if (m_config.isNetwork && !network.isConnected()) {
+        return;
+    }
+
+    QMessageBox::StandardButton ret = QMessageBox::question(
+        this, "确认投降", "确定要认输吗？本局将由对方获胜。",
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (ret != QMessageBox::Yes) {
+        return;
+    }
+
+    Gomoku::ChessPiece loser =
+        m_config.isNetwork ? m_myColor : game.getCurrentPlayer();
+    game.forfeit(loser);
+    statusLabel->setText("已投降");
+    if (m_config.isNetwork && network.isConnected()) {
+        network.sendSurrender();
+    }
+    updateButtons();
+}
+
+void MainWindow::onDrawClicked() {
+    if (game.getState() != Gomoku::GameState::InProgress) {
+        return;
+    }
+
+    if (m_config.isNetwork) {
+        if (!network.isConnected()) {
+            return;
+        }
+        if (m_drawPending) {
+            statusLabel->setText("已向对方发出和棋申请，等待回应...");
+            return;
+        }
+        m_drawPending = true;
+        network.sendDrawOffer();
+        statusLabel->setText("已向对方发出和棋申请，等待回应...");
+        updateButtons();
+        return;
+    }
+
+    QMessageBox::StandardButton ret = QMessageBox::question(
+        this, "求和棋", "确定本局和棋吗？",
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (ret == QMessageBox::Yes) {
+        game.declareDraw();
+        updateButtons();
+    }
+}
+
+void MainWindow::enterReplayMode() {
+    if (game.getMoveCount() <= 0) {
+        return;
+    }
+    m_drawPending = false;
+    stopMoveTimer();
+    boardWidget->setReplayMode(true);
+    boardWidget->setReplayStep(0);
+    if (replayControls) {
+        replayControls->show();
+    }
+    updateReplayStepLabel();
+    updateButtons();
+}
+
+void MainWindow::leaveReplayMode() {
+    boardWidget->setReplayMode(false);
+    boardWidget->setReplayStep(-1);
+    if (replayControls) {
+        replayControls->hide();
+    }
+    updateMoveCount();
+    updateButtons();
+}
+
+void MainWindow::onReplayClicked() {
+    enterReplayMode();
+}
+
+void MainWindow::onReplayStepPrev() {
+    if (!boardWidget || !boardWidget->isReplayMode()) {
+        return;
+    }
+    int step = boardWidget->getReplayStep();
+    if (step > 0) {
+        boardWidget->setReplayStep(step - 1);
+        updateReplayStepLabel();
+    }
+}
+
+void MainWindow::onReplayStepNext() {
+    if (!boardWidget || !boardWidget->isReplayMode()) {
+        return;
+    }
+    int step = boardWidget->getReplayStep();
+    int total = game.getMoveCount();
+    if (step < total) {
+        boardWidget->setReplayStep(step + 1);
+        updateReplayStepLabel();
+    }
+}
+
+void MainWindow::onReplayExit() {
+    leaveReplayMode();
+}
+
+void MainWindow::recordGameResult(Gomoku::GameState state) {
+    QSettings settings;
+    settings.setValue("stats/games",
+                      settings.value("stats/games", 0).toInt() + 1);
+
+    if (state == Gomoku::GameState::BlackWin) {
+        settings.setValue("stats/blackWins",
+                          settings.value("stats/blackWins", 0).toInt() + 1);
+    } else if (state == Gomoku::GameState::WhiteWin) {
+        settings.setValue("stats/whiteWins",
+                          settings.value("stats/whiteWins", 0).toInt() + 1);
+    } else if (state == Gomoku::GameState::Draw) {
+        settings.setValue("stats/draws",
+                          settings.value("stats/draws", 0).toInt() + 1);
+    }
+    settings.sync();
+}
+
+void MainWindow::showStatsDialog() {
+    QSettings settings;
+    int blackWins = settings.value("stats/blackWins", 0).toInt();
+    int whiteWins = settings.value("stats/whiteWins", 0).toInt();
+    int draws = settings.value("stats/draws", 0).toInt();
+    int games = settings.value("stats/games", 0).toInt();
+
+    QString text;
+    text += QString("总对局数：%1\n\n").arg(games);
+    text += QString("黑方战绩：%1 胜 / %2 负 / %3 平\n")
+                .arg(blackWins)
+                .arg(whiteWins)
+                .arg(draws);
+    text += QString("白方战绩：%1 胜 / %2 负 / %3 平")
+                .arg(whiteWins)
+                .arg(blackWins)
+                .arg(draws);
+
+    QMessageBox::information(this, "战绩统计", text);
+}
+
+void MainWindow::onShowStats() {
+    showStatsDialog();
 }

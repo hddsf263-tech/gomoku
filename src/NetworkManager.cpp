@@ -104,6 +104,24 @@ void NetworkManager::sendReset() {
     sendRaw(QJsonDocument(obj).toJson(QJsonDocument::Compact));
 }
 
+void NetworkManager::sendSurrender() {
+    QJsonObject obj;
+    obj["type"] = "SURRENDER";
+    sendRaw(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+}
+
+void NetworkManager::sendDrawOffer() {
+    QJsonObject obj;
+    obj["type"] = "DRAW_OFFER";
+    sendRaw(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+}
+
+void NetworkManager::sendDrawResponse(bool accept) {
+    QJsonObject obj;
+    obj["type"] = accept ? "DRAW_ACCEPT" : "DRAW_DECLINE";
+    sendRaw(QJsonDocument(obj).toJson(QJsonDocument::Compact));
+}
+
 void NetworkManager::readAvailable() {
     if (!socket_) return;
     buffer_.append(socket_->readAll());
@@ -135,6 +153,14 @@ void NetworkManager::dispatch(const QByteArray& json) {
         onMove_(obj["row"].toInt(), obj["col"].toInt());
     } else if (type == "RESET" && onReset_) {
         onReset_();
+    } else if (type == "SURRENDER" && onSurrender_) {
+        onSurrender_();
+    } else if (type == "DRAW_OFFER" && onDrawOffer_) {
+        onDrawOffer_();
+    } else if (type == "DRAW_ACCEPT" && onDrawResponse_) {
+        onDrawResponse_(true);
+    } else if (type == "DRAW_DECLINE" && onDrawResponse_) {
+        onDrawResponse_(false);
     }
 }
 

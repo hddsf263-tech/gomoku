@@ -25,6 +25,15 @@ public:
     MoveResult makeMove(int row, int col);
     bool undoMove();
 
+    /// @brief 当前已经落子步数
+    int getMoveCount() const;
+
+    /// @brief 一方认输（判负），loser 一方被判负，对手获胜。
+    void forfeit(ChessPiece loser);
+
+    /// @brief 双方同意和棋。
+    void declareDraw();
+
     GameState getState() const { return state; }
     ChessPiece getCurrentPlayer() const { return currentPlayer; }
     Board& getBoard() { return board; }
