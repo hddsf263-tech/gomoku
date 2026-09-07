@@ -1,135 +1,43 @@
 #include "AppSettings.h"
 
-#include <QSettings>
+namespace Gomoku {
 
-namespace AppCfg {
-
-QColor boardBase(BoardSkin skin) {
-    switch (skin) {
-        case BoardSkin::Jade:   return QColor("#2e5d52");
-        case BoardSkin::Wood:   return QColor("#b57c45");
-        case BoardSkin::Ink:    return QColor("#252b31");
-        case BoardSkin::Rose:   return QColor("#7a3d2c");
-        case BoardSkin::Custom: return QColor("#2e5d52");
+BoardPalette boardPalette(const QString& skin) {
+    if (skin == "wood") {
+        return { QColor(181, 124, 69), QColor(95, 59, 30), QColor(95, 59, 30) };
     }
-    return QColor("#2e5d52");
-}
-
-QColor boardLine(BoardSkin skin) {
-    switch (skin) {
-        case BoardSkin::Jade:   return QColor("#d5e4da");
-        case BoardSkin::Wood:   return QColor("#5f3b1e");
-        case BoardSkin::Ink:    return QColor("#aab3bb");
-        case BoardSkin::Rose:   return QColor("#e2c2a8");
-        case BoardSkin::Custom: return QColor("#d5e4da");
+    if (skin == "ink") {
+        return { QColor(37, 43, 49), QColor(170, 179, 187), QColor(200, 206, 211) };
     }
-    return QColor("#d5e4da");
-}
-
-QColor boardStar(BoardSkin skin) {
-    switch (skin) {
-        case BoardSkin::Jade:   return QColor("#c2d8cb");
-        case BoardSkin::Wood:   return QColor("#5f3b1e");
-        case BoardSkin::Ink:    return QColor("#c8ced3");
-        case BoardSkin::Rose:   return QColor("#e2c2a8");
-        case BoardSkin::Custom: return QColor("#c2d8cb");
+    if (skin == "rose") {
+        return { QColor(122, 61, 44), QColor(226, 194, 168), QColor(226, 194, 168) };
     }
-    return QColor("#c2d8cb");
+    return { QColor(46, 93, 82), QColor(213, 228, 218), QColor(194, 216, 203) };
 }
 
-QColor pieceBlackInner(PieceSkin skin) {
-    switch (skin) {
-        case PieceSkin::Classic: return QColor("#4e5655");
-        case PieceSkin::Jade:    return QColor("#7fb8a2");
-        case PieceSkin::Onyx:    return QColor("#6a7176");
-        case PieceSkin::Amber:   return QColor("#f4c77e");
-        case PieceSkin::Custom:  return QColor("#4e5655");
+PiecePalette piecePalette(const QString& skin) {
+    if (skin == "jade") {
+        return {
+            QColor(127, 184, 162), QColor(31, 91, 76),
+            QColor(247, 253, 249), QColor(207, 229, 218)
+        };
     }
-    return QColor("#4e5655");
-}
-
-QColor pieceBlackOuter(PieceSkin skin) {
-    switch (skin) {
-        case PieceSkin::Classic: return QColor("#101214");
-        case PieceSkin::Jade:    return QColor("#1f5b4c");
-        case PieceSkin::Onyx:    return QColor("#14181b");
-        case PieceSkin::Amber:   return QColor("#96571d");
-        case PieceSkin::Custom:  return QColor("#101214");
+    if (skin == "onyx") {
+        return {
+            QColor(106, 113, 118), QColor(20, 24, 27),
+            QColor(255, 255, 255), QColor(188, 195, 200)
+        };
     }
-    return QColor("#101214");
-}
-
-QColor pieceWhiteInner(PieceSkin skin) {
-    switch (skin) {
-        case PieceSkin::Classic: return QColor("#ffffff");
-        case PieceSkin::Jade:    return QColor("#f7fdf9");
-        case PieceSkin::Onyx:    return QColor("#ffffff");
-        case PieceSkin::Amber:   return QColor("#fffdf6");
-        case PieceSkin::Custom:  return QColor("#ffffff");
+    if (skin == "amber") {
+        return {
+            QColor(244, 199, 126), QColor(150, 87, 29),
+            QColor(255, 253, 246), QColor(234, 216, 186)
+        };
     }
-    return QColor("#ffffff");
+    return {
+        QColor(78, 86, 85), QColor(16, 18, 20),
+        QColor(255, 255, 255), QColor(221, 217, 203)
+    };
 }
 
-QColor pieceWhiteOuter(PieceSkin skin) {
-    switch (skin) {
-        case PieceSkin::Classic: return QColor("#ddd9cb");
-        case PieceSkin::Jade:    return QColor("#cfe5da");
-        case PieceSkin::Onyx:    return QColor("#bcc3c8");
-        case PieceSkin::Amber:   return QColor("#ead8ba");
-        case PieceSkin::Custom:  return QColor("#ddd9cb");
-    }
-    return QColor("#ddd9cb");
-}
-
-AppSettings AppSettings::load() {
-    AppSettings s;
-    QSettings settings;
-
-    s.boardSkin = static_cast<BoardSkin>(
-        settings.value("skin/board", static_cast<int>(BoardSkin::Jade)).toInt());
-    s.pieceSkin = static_cast<PieceSkin>(
-        settings.value("skin/pieces", static_cast<int>(PieceSkin::Classic)).toInt());
-    s.boardImagePath = settings.value("skin/boardImage").toString();
-    s.blackImagePath = settings.value("skin/blackImage").toString();
-    s.whiteImagePath = settings.value("skin/whiteImage").toString();
-
-    s.placeEffect = static_cast<PlaceEffect>(
-        settings.value("vfx/placeEffect", static_cast<int>(PlaceEffect::Ring)).toInt());
-    s.winEffect = static_cast<WinEffect>(
-        settings.value("vfx/winEffect", static_cast<int>(WinEffect::Pulse)).toInt());
-    s.placeSound = static_cast<PlaceSound>(
-        settings.value("vfx/placeSound", static_cast<int>(PlaceSound::Wood)).toInt());
-    s.winSound = static_cast<WinSound>(
-        settings.value("vfx/winSound", static_cast<int>(WinSound::Chord)).toInt());
-    s.customPlaceAudioPath = settings.value("vfx/customPlaceAudio").toString();
-    s.customWinAudioPath = settings.value("vfx/customWinAudio").toString();
-    s.soundEnabled = settings.value("audio/soundEnabled", true).toBool();
-
-    return s;
-}
-
-void AppSettings::save() const {
-    QSettings settings;
-
-    settings.setValue("skin/board", static_cast<int>(boardSkin));
-    settings.setValue("skin/pieces", static_cast<int>(pieceSkin));
-    settings.setValue("skin/boardImage", boardImagePath);
-    settings.setValue("skin/blackImage", blackImagePath);
-    settings.setValue("skin/whiteImage", whiteImagePath);
-
-    settings.setValue("vfx/placeEffect", static_cast<int>(placeEffect));
-    settings.setValue("vfx/winEffect", static_cast<int>(winEffect));
-    settings.setValue("vfx/placeSound", static_cast<int>(placeSound));
-    settings.setValue("vfx/winSound", static_cast<int>(winSound));
-    settings.setValue("vfx/customPlaceAudio", customPlaceAudioPath);
-    settings.setValue("vfx/customWinAudio", customWinAudioPath);
-    settings.setValue("audio/soundEnabled", soundEnabled);
-
-    settings.sync();
-}
-
-void AppSettings::resetToDefaults() {
-    *this = AppSettings();
-}
-
-} // namespace AppCfg
+} // namespace Gomoku

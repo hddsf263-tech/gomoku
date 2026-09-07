@@ -1,431 +1,478 @@
 #include "BoardWidget.h"
 
+#include <QMouseEvent>
 #include <QPainter>
 #include <QPainterPath>
-#include <QRadialGradient>
-#include <QLinearGradient>
 #include <QPaintEvent>
-#include <QMouseEvent>
-#include <QResizeEvent>
 #include <QRandomGenerator>
 
 #include <algorithm>
 #include <cmath>
 
+namespace Gomoku {
+
 namespace {
 
-constexpr double kPi = 3.14159265358979323846;
+constexpr int kSide = 15;
+constexpr int kLeft = 28;
+constexpr int kTop = 24;
+constexpr int kRight = 12;
+constexpr int kBottom = 10;
+
+QColor alphaColor(const QColor& color, int alpha) {
+    QColor result = color;
+    result.setAlpha(alpha);
+    return result;
+}
+
+QPointF pointFromProgress(const QRect& rect, double x, double y) {
+    return QPointF(rect.left() + rect.width() * x,
+                   rect.top() + rect.height() * y);
+}
 
 } // namespace
 
-BoardWidget::BoardWidget(QWidget *parent)
+BoardWidget::BoardWidget(QWidget* parent)
     : QWidget(parent)
-    , game(nullptr)
-    , cellSize(30)
-    , margin(20)
-    , pieceRadius(13)
 {
-    setMinimumSize(400, 400);
+    setMinimumSize(380, 360);
     setMouseTracking(true);
-    m_clock.start();
-    m_effectTimer.setInterval(30);
-    connect(&m_effectTimer, &QTimer::timeout, this, [this]() {
-        onEffectTick();
+    setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+    ringTimer_.setInterval(24);
+    connect(&ringTimer_, &QTimer::timeout, this, [this]() {
+        if (ringProgress_ >= 0) {
+            ringProgress_ += 0.10;
+            if (ringProgress_ >= 1.0) {
+                ringProgress_ = -1.0;
+                ringTimer_.stop();
+            }
+        }
+        update();
+    });
+
+    particleTimer_.setInterval(30);
+    connect(&particleTimer_, &QTimer::timeout, this, [this]() {
+        bool alive = false;
+        for (Particle& particle : particles_) {
+            particle.age += 0.03;
+            particle.x += particle.vx * 0.03;
+            particle.y += particle.vy * 0.03;
+            particle.vy += 140.0 * 0.03;
+            if (particle.age < particle.life) {
+                alive = true;
+            }
+        }
+        particles_.erase(
+            std::remove_if(particles_.begin(), particles_.end(),
+                           [](const Particle& p) {
+                return p.age >= p.life;
+            }),
+            particles_.end());
+        if (!alive) {
+            particleTimer_.stop();
+        }
+        update();
+    });
+
+    winTimer_.setInterval(430);
+    connect(&winTimer_, &QTimer::timeout, this, [this]() {
+        winPulse_ = !winPulse_;
+        update();
     });
 }
 
-void BoardWidget::setGame(Gomoku::Game* gamePtr) {
-    game = gamePtr;
-}
-
-void BoardWidget::configure(const AppCfg::AppSettings& settings) {
-    m_settings = settings;
+void BoardWidget::setBoardColors(QColor base, QColor line, QColor star) {
+    boardBase_ = base;
+    lineColor_ = line;
+    starColor_ = star;
     update();
 }
 
-void BoardWidget::updateBoard() {
+void BoardWidget::setBoardImage(const QString& path) {
+    boardImage_ = QPixmap();
+    if (!path.isEmpty()) {
+        boardImage_.load(path);
+        boardImage_ = boardImage_.scaled(
+            800, 800, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+    }
     update();
 }
 
-std::pair<int, int> BoardWidget::posToGrid(int x, int y) const {
-    int row = static_cast<int>(std::round((y - margin) / static_cast<double>(cellSize)));
-    int col = static_cast<int>(std::round((x - margin) / static_cast<double>(cellSize)));
-    return {row, col};
+void BoardWidget::setPieceImages(const QString& blackPath, const QString& whitePath) {
+    blackImage_ = QPixmap();
+    whiteImage_ = QPixmap();
+    blackImage_.load(blackPath);
+    whiteImage_.load(whitePath);
+    if (!blackImage_.isNull()) {
+        blackImage_ = blackImage_.scaled(
+            220, 220, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+    }
+    if (!whiteImage_.isNull()) {
+        whiteImage_ = whiteImage_.scaled(
+            220, 220, Qt::KeepAspectRatioByExpanding, Qt::SmoothTransformation);
+    }
+    update();
 }
 
-std::pair<int, int> BoardWidget::gridToPos(int row, int col) const {
-    int x = margin + col * cellSize;
-    int y = margin + row * cellSize;
-    return {x, y};
+void BoardWidget::setPieceGradient(int piece, const QColor& light, const QColor& dark) {
+    if (piece == 0) {
+        blackLight_ = light;
+        blackDark_ = dark;
+    } else {
+        whiteLight_ = light;
+        whiteDark_ = dark;
+    }
+    update();
 }
 
-void BoardWidget::paintEvent(QPaintEvent *event) {
+void BoardWidget::clearGameVisuals() {
+    ringProgress_ = -1.0;
+    ringTimer_.stop();
+    particles_.clear();
+    particleTimer_.stop();
+    winLine_.clear();
+    winTimer_.stop();
+    hoverRow_ = -1;
+    hoverCol_ = -1;
+    update();
+}
+
+int BoardWidget::cellSize() const {
+    const QRect area = gridArea();
+    return qMax(16, qMin(area.width(), area.height()) / (kSide - 1));
+}
+
+QRect BoardWidget::gridArea() const {
+    const int areaWidth = qMax(100, width() - kLeft - kRight);
+    const int areaHeight = qMax(100, height() - kTop - kBottom);
+    const int cell = qMin(areaWidth, areaHeight) / (kSide - 1);
+    const int side = cell * (kSide - 1);
+    return QRect(kLeft + (areaWidth - side) / 2,
+                 kTop + (areaHeight - side) / 2,
+                 side,
+                 side);
+}
+
+QPoint BoardWidget::gridToScreen(int row, int col) const {
+    const QRect area = gridArea();
+    const int cell = area.width() / (kSide - 1);
+    return QPoint(area.left() + col * cell, area.top() + row * cell);
+}
+
+void BoardWidget::paintEvent(QPaintEvent* event) {
     Q_UNUSED(event);
-
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
-    painter.setRenderHint(QPainter::SmoothPixmapTransform);
 
-    // 棋盘抖动偏移
-    if (m_winShake && m_clock.isValid()) {
-        double t = static_cast<double>(m_clock.elapsed() - m_shakeStartMs);
-        if (t < m_shakeDurationMs) {
-            double k = 1.0 - t / m_shakeDurationMs;
-            double amp = 6.0 * k;
-            painter.translate(std::sin(t * 0.09) * amp,
-                              std::cos(t * 0.09) * amp);
-        } else {
-            m_winShake = false;
-        }
-    }
-
-    drawBoardBackground(painter);
+    drawBackground(painter);
     drawGrid(painter);
-
-    if (game) {
-        drawPieces(painter);
-        drawLastMoveMarker(painter);
-        drawWinHighlight(painter);
+    drawCoordinates(painter);
+    if (game_) {
+        drawGhost(painter);
+        drawStones(painter);
     }
-
-    drawEffects(painter);
+    drawParticles(painter);
+    drawRing(painter);
+    drawWinLine(painter);
 }
 
-void BoardWidget::drawBoardBackground(QPainter& painter) {
-    painter.fillRect(rect(), AppCfg::boardBase(m_settings.boardSkin));
+void BoardWidget::drawBackground(QPainter& painter) {
+    painter.fillRect(rect(), QColor(242, 241, 236));
+    const QRect area = gridArea();
+    const QRect boardRect = area.adjusted(-10, -10, 10, 10);
 
-    // 若启用自定义背景图片，覆盖绘制
-    if (m_settings.boardSkin == AppCfg::BoardSkin::Custom &&
-        !m_settings.boardImagePath.isEmpty()) {
-        QImage image = loadImageCached(m_settings.boardImagePath);
-        if (!image.isNull()) {
-            QImage scaled = image.scaled(size(),
-                                         Qt::KeepAspectRatioByExpanding,
-                                         Qt::SmoothTransformation);
-            int x = (scaled.width() - width()) / 2;
-            int y = (scaled.height() - height()) / 2;
-            painter.drawImage(x, y, scaled);
-        }
+    QPainterPath path;
+    path.addRoundedRect(boardRect, 12, 12);
+    if (!boardImage_.isNull()) {
+        painter.save();
+        painter.setClipPath(path);
+        painter.drawPixmap(boardRect, boardImage_);
+        painter.setBrush(QColor(14, 26, 22, 55));
+        painter.setPen(Qt::NoPen);
+        painter.drawRect(boardRect);
+        painter.restore();
     } else {
-        // 轻微渐变叠加，增加质感
-        QLinearGradient overlay(rect().topLeft(), rect().bottomRight());
-        overlay.setColorAt(0, QColor(255, 255, 255, 14));
-        overlay.setColorAt(1, QColor(0, 0, 0, 30));
-        painter.fillRect(rect(), overlay);
+        QLinearGradient gradient(boardRect.topLeft(), boardRect.bottomRight());
+        gradient.setColorAt(0, boardBase_.lighter(108));
+        gradient.setColorAt(1, boardBase_.darker(112));
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(gradient);
+        painter.drawPath(path);
     }
+
+    painter.setPen(QPen(QColor(0, 0, 0, 45), 1));
+    painter.setBrush(Qt::NoBrush);
+    painter.drawPath(path);
 }
 
 void BoardWidget::drawGrid(QPainter& painter) {
-    QPen pen(AppCfg::boardLine(m_settings.boardSkin), 1);
-    painter.setPen(pen);
+    const QRect area = gridArea();
+    const int cell = area.width() / (kSide - 1);
 
-    int boardPixelSize = (Gomoku::Board::SIZE - 1) * cellSize;
-
-    for (int i = 0; i < Gomoku::Board::SIZE; ++i) {
-        int pos = margin + i * cellSize;
-        painter.drawLine(margin, pos, margin + boardPixelSize, pos);
-        painter.drawLine(pos, margin, pos, margin + boardPixelSize);
+    QPen gridPen(lineColor_, 1);
+    painter.setPen(gridPen);
+    for (int i = 0; i < kSide; i++) {
+        const int pos = area.left() + i * cell;
+        painter.drawLine(pos, area.top(), pos, area.bottom());
+        painter.drawLine(area.left(), pos, area.right(), pos);
     }
 
-    static const int starPoints[5][2] = {
-        {3, 3}, {3, 11}, {11, 3}, {11, 11}, {7, 7}
-    };
-
-    painter.setBrush(AppCfg::boardStar(m_settings.boardSkin));
-    for (const auto& point : starPoints) {
-        auto [x, y] = gridToPos(point[0], point[1]);
-        painter.drawEllipse(x - 3, y - 3, 6, 6);
+    painter.setPen(Qt::NoPen);
+    painter.setBrush(starColor_);
+    static const int stars[5][2] = { {3, 3}, {3, 11}, {7, 7}, {11, 3}, {11, 11} };
+    for (const auto& star : stars) {
+        const QPoint p = gridToScreen(star[0], star[1]);
+        painter.drawEllipse(p, 3, 3);
     }
 }
 
-void BoardWidget::drawPieces(QPainter& painter) {
-    const auto& board = game->getBoard();
-    const AppCfg::PieceSkin skin = m_settings.pieceSkin;
+void BoardWidget::drawCoordinates(QPainter& painter) {
+    const QRect area = gridArea();
+    const int cell = area.width() / (kSide - 1);
+    QFont font = painter.font();
+    font.setPixelSize(10);
+    font.setWeight(QFont::DemiBold);
+    painter.setFont(font);
+    painter.setPen(QColor(107, 116, 111));
 
-    for (int row = 0; row < Gomoku::Board::SIZE; ++row) {
-        for (int col = 0; col < Gomoku::Board::SIZE; ++col) {
-            auto piece = board.getPiece(row, col);
-            if (piece == Gomoku::ChessPiece::Empty) {
+    for (int i = 0; i < kSide; i++) {
+        const QPoint top = gridToScreen(0, i);
+        const QPoint left = gridToScreen(i, 0);
+        painter.drawText(QRect(top.x() - 40, 2, 80, 18),
+                         Qt::AlignCenter, QString(QChar('A' + i)));
+        painter.drawText(QRect(0, left.y() - 8, kLeft - 4, 16),
+                         Qt::AlignRight, QString::number(i + 1));
+    }
+}
+
+void BoardWidget::drawGhost(QPainter& painter) {
+    if (!ghostAllowed_ || thinking_ || hoverRow_ < 0 || !game_ ||
+        game_->status() != GameStatus::InProgress ||
+        game_->pieceAt(hoverRow_, hoverCol_) != Piece::Empty) {
+        return;
+    }
+
+    const QPoint center = gridToScreen(hoverRow_, hoverCol_);
+    const int cell = gridArea().width() / (kSide - 1);
+    const double radius = cell * 0.42;
+    const Piece piece = game_->currentPlayer();
+    const bool isBlack = piece == Piece::Black;
+    QColor fill = isBlack ? QColor(24, 28, 30, 110) : QColor(255, 255, 255, 120);
+    QPen pen(isBlack ? QColor(255, 255, 255, 90) : QColor(40, 48, 46, 70), 1.5);
+    painter.setPen(pen);
+    painter.setBrush(fill);
+    painter.drawEllipse(center, static_cast<int>(radius), static_cast<int>(radius));
+}
+
+void BoardWidget::drawStones(QPainter& painter) {
+    const int cell = gridArea().width() / (kSide - 1);
+    const double radius = cell * 0.43;
+
+    for (int row = 0; row < kSide; row++) {
+        for (int col = 0; col < kSide; col++) {
+            const Piece piece = game_->pieceAt(row, col);
+            if (piece == Piece::Empty) {
                 continue;
             }
+            const QPoint center = gridToScreen(row, col);
 
-            auto [x, y] = gridToPos(row, col);
+            QPainterPath shadowPath;
+            shadowPath.addEllipse(QPointF(center.x() + 2, center.y() + 2),
+                                  radius, radius);
+            painter.fillPath(shadowPath, QColor(0, 0, 0, 70));
 
-            // 阴影
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(QColor(0, 0, 0, 80));
-            painter.drawEllipse(x - pieceRadius + 2, y - pieceRadius + 2,
-                                pieceRadius * 2, pieceRadius * 2);
+            const QRectF circle(center.x() - radius,
+                                center.y() - radius,
+                                radius * 2,
+                                radius * 2);
+            const bool isBlack = piece == Piece::Black;
+            QPixmap* image = isBlack ? &blackImage_ : &whiteImage_;
+            QColor light = isBlack ? blackLight_ : whiteLight_;
+            QColor dark = isBlack ? blackDark_ : whiteDark_;
 
-            QRectF circleRect(x - pieceRadius, y - pieceRadius,
-                              pieceRadius * 2, pieceRadius * 2);
-
-            const bool isBlack = (piece == Gomoku::ChessPiece::Black);
-
-            // 自定义图片棋子
-            QString imagePath = isBlack ? m_settings.blackImagePath
-                                        : m_settings.whiteImagePath;
-            if (skin == AppCfg::PieceSkin::Custom && !imagePath.isEmpty()) {
-                QImage image = loadImageCached(imagePath);
-                if (!image.isNull()) {
-                    QPainterPath path;
-                    path.addEllipse(circleRect);
-                    painter.save();
-                    painter.setClipPath(path);
-                    QImage scaled = image.scaled(circleRect.size().toSize(),
-                                                 Qt::KeepAspectRatioByExpanding,
-                                                 Qt::SmoothTransformation);
-                    painter.drawImage(circleRect.topLeft(), scaled);
-                    painter.restore();
-                    continue;
-                }
+            QPainterPath stonePath;
+            stonePath.addEllipse(circle);
+            painter.save();
+            painter.setClipPath(stonePath);
+            if (!image->isNull()) {
+                painter.drawPixmap(circle.toRect(), *image);
+                painter.fillRect(circle, QColor(0, 0, 0, 18));
+            } else {
+                QRadialGradient gradient(center.x() - radius * 0.3,
+                                         center.y() - radius * 0.35,
+                                         radius * 1.25);
+                gradient.setColorAt(0, light);
+                gradient.setColorAt(1, dark);
+                painter.setPen(Qt::NoPen);
+                painter.setBrush(gradient);
+                painter.drawEllipse(circle);
             }
+            QRadialGradient gloss(center.x() - radius * 0.45,
+                                  center.y() - radius * 0.5,
+                                  radius * 0.7);
+            gloss.setColorAt(0, QColor(255, 255, 255, 70));
+            gloss.setColorAt(1, QColor(255, 255, 255, 0));
+            painter.fillPath(stonePath, gloss);
+            painter.restore();
 
-            // 渐变棋子
-            QColor inner = isBlack ? AppCfg::pieceBlackInner(skin)
-                                   : AppCfg::pieceWhiteInner(skin);
-            QColor outer = isBlack ? AppCfg::pieceBlackOuter(skin)
-                                   : AppCfg::pieceWhiteOuter(skin);
-
-            QRadialGradient gradient;
-            gradient.setCenter(x, y);
-            gradient.setFocalPoint(x - pieceRadius * 0.35,
-                                   y - pieceRadius * 0.4);
-            gradient.setRadius(pieceRadius * 1.15);
-            gradient.setColorAt(0.0, inner);
-            gradient.setColorAt(0.72, inner);
-            gradient.setColorAt(1.0, outer);
-            painter.setBrush(gradient);
-            painter.drawEllipse(circleRect);
-
-            // 高光
-            QColor gloss(255, 255, 255,
-                         isBlack ? 70 : 90);
-            painter.setBrush(gloss);
-            painter.drawEllipse(QRectF(x - pieceRadius * 0.55,
-                                       y - pieceRadius * 0.6,
-                                       pieceRadius * 0.5,
-                                       pieceRadius * 0.35));
-        }
-    }
-}
-
-void BoardWidget::drawLastMoveMarker(QPainter& painter) {
-    const auto& board = game->getBoard();
-    auto lastMove = board.getLastMove();
-
-    if (lastMove.has_value()) {
-        auto [x, y] = gridToPos(lastMove->row, lastMove->col);
-        painter.setPen(QPen(QColor(255, 0, 0), 2));
-        painter.setBrush(Qt::NoBrush);
-        painter.drawRect(x - 4, y - 4, 8, 8);
-    }
-}
-
-void BoardWidget::drawWinHighlight(QPainter& painter) {
-    if (m_winCells.isEmpty()) {
-        return;
-    }
-
-    double pulse = 1.0;
-    if (m_settings.winEffect == AppCfg::WinEffect::Pulse) {
-        double t = static_cast<double>(m_clock.elapsed());
-        pulse = 0.75 + 0.25 * std::sin(t * 0.02);
-    }
-
-    QColor gold(255, 214, 90, static_cast<int>(190 * pulse));
-    painter.setBrush(Qt::NoBrush);
-    painter.setPen(QPen(gold, 3));
-
-    for (const auto& p : m_winCells) {
-        auto [x, y] = gridToPos(p.row, p.col);
-        int r = pieceRadius + 4;
-        painter.drawEllipse(x - r, y - r, r * 2, r * 2);
-    }
-}
-
-void BoardWidget::drawEffects(QPainter& painter) {
-    qint64 now = m_clock.elapsed();
-
-    for (const Effect& e : m_effects) {
-        double progress = (now - e.startMs) / e.durationMs;
-        if (progress < 0.0) {
-            progress = 0.0;
-        } else if (progress > 1.0) {
-            progress = 1.0;
-        }
-
-        if (e.kind == EffectKind::Ring) {
-            double radius = pieceRadius * 0.6
-                            + (pieceRadius * 2.6 - pieceRadius * 0.6) * progress;
-            int alpha = static_cast<int>(220 * (1.0 - progress));
-            QColor c = e.color;
-            c.setAlpha(alpha);
-            painter.setPen(QPen(c, 3));
+            if (isBlack) {
+                painter.setPen(QPen(QColor(0, 0, 0, 120), 1));
+            } else {
+                painter.setPen(QPen(QColor(90, 90, 90, 90), 1));
+            }
             painter.setBrush(Qt::NoBrush);
-            painter.drawEllipse(QPointF(e.pos), radius, radius);
-        } else { // Particle
-            QPointF current(e.pos.x() + e.dx * progress,
-                            e.pos.y() + e.dy * progress);
-            int alpha = static_cast<int>(255 * (1.0 - progress));
-            QColor c = e.color;
-            c.setAlpha(alpha);
-            painter.setPen(Qt::NoPen);
-            painter.setBrush(c);
-            painter.drawEllipse(current, e.size * 0.5, e.size * 0.5);
+            painter.drawEllipse(circle);
         }
     }
 }
 
-void BoardWidget::triggerPlaceEffect(int row, int col, int player) {
-    if (m_settings.placeEffect == AppCfg::PlaceEffect::None) {
+void BoardWidget::drawRing(QPainter& painter) {
+    if (ringProgress_ < 0 || ringRow_ < 0) {
         return;
     }
-
-    auto [x, y] = gridToPos(row, col);
-    qint64 now = m_clock.elapsed();
-
-    if (m_settings.placeEffect == AppCfg::PlaceEffect::Ring) {
-        Effect e;
-        e.kind = EffectKind::Ring;
-        e.pos = QPointF(x, y);
-        e.startMs = now;
-        e.durationMs = 550.0;
-        e.color = (player == 0) ? QColor(255, 255, 255)
-                                : QColor(255, 220, 120);
-        m_effects.push_back(e);
-    } else if (m_settings.placeEffect == AppCfg::PlaceEffect::Spark) {
-        const std::vector<QColor> colors = {
-            QColor("#ffffff"), QColor("#ffd76a"),
-            QColor("#9fe8ff"), QColor("#ff9d9d")
-        };
-        spawnParticles(x, y, 10, 1.1, colors, now);
-    }
-
-    ensureEffectTimer();
+    const int cell = gridArea().width() / (kSide - 1);
+    const QPoint center = gridToScreen(ringRow_, ringCol_);
+    const double progress = ringProgress_;
+    const double radius = cell * (0.45 + progress * 0.75);
+    const Piece piece = game_ ? game_->pieceAt(ringRow_, ringCol_) : Piece::Empty;
+    const QColor color = piece == Piece::Black
+        ? QColor(255, 255, 255, 230)
+        : QColor(30, 40, 38, 220);
+    QPen pen(color, 2);
+    painter.setPen(pen);
+    painter.setBrush(Qt::NoBrush);
+    painter.drawEllipse(center, static_cast<int>(radius),
+                        static_cast<int>(radius));
 }
 
-void BoardWidget::triggerWinEffect(const std::vector<Gomoku::Position>& cells) {
-    m_winCells.clear();
-    for (const auto& p : cells) {
-        m_winCells.push_back(p);
+void BoardWidget::playPlaceEffect(int row, int col, Piece piece) {
+    if (placeEffect_ == "none") {
+        return;
     }
-
-    qint64 now = m_clock.elapsed();
-    if (m_settings.winEffect == AppCfg::WinEffect::Burst && !cells.empty()) {
-        const auto& mid = cells[cells.size() / 2];
-        auto [x, y] = gridToPos(mid.row, mid.col);
-        const std::vector<QColor> colors = {
-            QColor("#ffd76a"), QColor("#ff9d9d"), QColor("#9fe8ff"),
-            QColor("#b7f0a5"), QColor("#fff7d6")
-        };
-        spawnParticles(x, y, 24, 2.4, colors, now);
+    static const std::vector<QColor> sparkColors = {
+        QColor(255, 255, 255),
+        QColor(255, 215, 106),
+        QColor(159, 232, 255),
+        QColor(255, 157, 157)
+    };
+    if (placeEffect_ == "spark") {
+        spawnParticles(row, col, 12, 1.15, sparkColors);
+    } else {
+        ringRow_ = row;
+        ringCol_ = col;
+        ringProgress_ = 0.0;
+        ringTimer_.start();
     }
-
-    if (m_settings.winEffect == AppCfg::WinEffect::Pulse ||
-        m_settings.winEffect == AppCfg::WinEffect::Burst) {
-        m_winShake = true;
-        m_shakeStartMs = now;
-        m_shakeDurationMs = 500.0;
-    }
-
-    ensureEffectTimer();
-}
-
-void BoardWidget::clearBoardEffects() {
-    m_effects.clear();
-    m_winCells.clear();
-    m_winShake = false;
-    ensureEffectTimer();
     update();
 }
 
-void BoardWidget::spawnParticles(double x, double y, int count, double spread,
-                                 const std::vector<QColor>& colors,
-                                 qint64 startMs) {
-    if (colors.empty()) {
+void BoardWidget::playWinEffect(const std::vector<GameMove>& line) {
+    winLine_ = line;
+    winPulse_ = true;
+    if (winEffect_ != "none") {
+        winTimer_.start();
+    }
+
+    static const std::vector<QColor> burstColors = {
+        QColor(255, 215, 106),
+        QColor(255, 157, 157),
+        QColor(159, 232, 255),
+        QColor(183, 240, 165),
+        QColor(255, 247, 214)
+    };
+    if (winEffect_ == "burst" && !line.empty()) {
+        spawnParticles(line[line.size() / 2].row,
+                       line[line.size() / 2].col,
+                       30, 2.6, burstColors);
+    }
+}
+
+void BoardWidget::drawWinLine(QPainter& painter) {
+    if (winLine_.empty()) {
         return;
     }
+    const int cell = gridArea().width() / (kSide - 1);
+    const QColor accent = winPulse_
+        ? QColor(224, 166, 62, 250)
+        : QColor(224, 166, 62, 160);
+    QPen pen(accent, qMax(3, cell / 14));
+    painter.setPen(pen);
+    painter.setBrush(Qt::NoBrush);
 
-    auto* rng = QRandomGenerator::global();
-    double cell = static_cast<double>(cellSize);
-    double baseDist = cell * 0.7;
-
-    for (int i = 0; i < count; ++i) {
-        double angle = 2.0 * kPi * i / count
-                       + (rng->generateDouble() - 0.5) * 0.7;
-        double dist = baseDist * (0.7 + rng->generateDouble() * 0.9) * spread;
-
-        Effect e;
-        e.kind = EffectKind::Particle;
-        e.pos = QPointF(x, y);
-        e.startMs = startMs;
-        e.durationMs = 750.0;
-        e.dx = std::cos(angle) * dist;
-        e.dy = std::sin(angle) * dist;
-        e.size = std::max(4.0, cell * 0.18);
-        e.color = colors[i % colors.size()];
-        m_effects.push_back(e);
+    for (const GameMove& move : winLine_) {
+        const QPoint p = gridToScreen(move.row, move.col);
+        painter.drawEllipse(p, static_cast<int>(cell * 0.48),
+                            static_cast<int>(cell * 0.48));
     }
 }
 
-QImage BoardWidget::loadImageCached(const QString& path) {
-    auto it = m_imageCache.find(path);
-    if (it != m_imageCache.end()) {
-        return it.value();
-    }
-    QImage image(path);
-    if (!image.isNull()) {
-        m_imageCache.insert(path, image);
-    }
-    return image;
-}
-
-void BoardWidget::ensureEffectTimer() {
-    bool need = !m_effects.isEmpty() || m_winShake ||
-                (!m_winCells.isEmpty() &&
-                 m_settings.winEffect == AppCfg::WinEffect::Pulse);
-    if (need && !m_effectTimer.isActive()) {
-        m_effectTimer.start();
-    } else if (!need && m_effectTimer.isActive()) {
-        m_effectTimer.stop();
+void BoardWidget::drawParticles(QPainter& painter) {
+    for (const Particle& particle : particles_) {
+        const double alpha = 1.0 - particle.age / particle.life;
+        QColor color = particle.color;
+        color.setAlphaF(qMax(0.0, alpha));
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(color);
+        const double size = particle.size * (1.0 - 0.35 * alpha);
+        painter.drawEllipse(QPointF(particle.x, particle.y),
+                            size, size);
     }
 }
 
-void BoardWidget::onEffectTick() {
-    qint64 now = m_clock.elapsed();
+void BoardWidget::spawnParticles(int row, int col, int count,
+                                 double spread,
+                                 const std::vector<QColor>& colors) {
+    const QPoint center = gridToScreen(row, col);
+    const double cell = gridArea().width() / (kSide - 1);
+    for (int i = 0; i < count; i++) {
+        const double angle = 2.0 * M_PI * i / count +
+                             (QRandomGenerator::global()->generateDouble() - 0.5) * 0.7;
+        const double speed = cell * (0.7 + QRandomGenerator::global()->generateDouble() * 0.9) * spread;
+        Particle particle;
+        particle.x = center.x();
+        particle.y = center.y();
+        particle.vx = std::cos(angle) * speed;
+        particle.vy = std::sin(angle) * speed - 25.0;
+        particle.life = 0.65 + QRandomGenerator::global()->generateDouble() * 0.25;
+        particle.size = qMax(2.5, cell * 0.10);
+        particle.color = colors[i % colors.size()];
+        particles_.push_back(particle);
+    }
+    particleTimer_.start();
+}
 
-    for (int i = m_effects.size() - 1; i >= 0; --i) {
-        if (now - m_effects[i].startMs >= m_effects[i].durationMs) {
-            m_effects.removeAt(i);
+void BoardWidget::mousePressEvent(QMouseEvent* event) {
+    if (event->button() == Qt::LeftButton && game_) {
+        const QPoint p = event->pos();
+        const int cell = gridArea().width() / (kSide - 1);
+        int col = qRound((p.x() - gridArea().left()) / static_cast<double>(cell));
+        int row = qRound((p.y() - gridArea().top()) / static_cast<double>(cell));
+        if (row >= 0 && row < kSide && col >= 0 && col < kSide) {
+            emit positionClicked(row, col);
         }
     }
+}
 
-    if (m_winShake && now - m_shakeStartMs >= m_shakeDurationMs) {
-        m_winShake = false;
+void BoardWidget::mouseMoveEvent(QMouseEvent* event) {
+    const int cell = gridArea().width() / (kSide - 1);
+    hoverCol_ = qRound((event->pos().x() - gridArea().left()) /
+                       static_cast<double>(cell));
+    hoverRow_ = qRound((event->pos().y() - gridArea().top()) /
+                       static_cast<double>(cell));
+    if (hoverRow_ < 0 || hoverRow_ >= kSide ||
+        hoverCol_ < 0 || hoverCol_ >= kSide) {
+        hoverRow_ = -1;
+        hoverCol_ = -1;
     }
-
-    ensureEffectTimer();
     update();
 }
 
-void BoardWidget::mousePressEvent(QMouseEvent *event) {
-    if (!game || event->button() != Qt::LeftButton) {
-        return;
-    }
-
-    auto [row, col] = posToGrid(event->pos().x(), event->pos().y());
-
-    const auto& board = game->getBoard();
-    if (board.isValidPosition(row, col)) {
-        emit positionClicked(row, col);
-    }
+void BoardWidget::leaveEvent(QEvent* event) {
+    QWidget::leaveEvent(event);
+    hoverRow_ = -1;
+    hoverCol_ = -1;
+    update();
 }
 
-void BoardWidget::resizeEvent(QResizeEvent *event) {
-    QWidget::resizeEvent(event);
-
-    int minDimension = qMin(width(), height());
-    cellSize = (minDimension - 2 * margin) / (Gomoku::Board::SIZE - 1);
-    pieceRadius = cellSize / 3;
-}
+} // namespace Gomoku

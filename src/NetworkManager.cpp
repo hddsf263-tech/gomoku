@@ -39,7 +39,9 @@ void NetworkManager::connectToHost(const QString& host, quint16 port) {
     attachSocket(s);
     QObject::connect(s, &QTcpSocket::connected, [this]() {
         connected_ = true;
-        if (onConnected_) onConnected_();
+        if (onConnected_) {
+            onConnected_();
+        }
     });
     s->connectToHost(host, port);
 }
@@ -63,16 +65,22 @@ void NetworkManager::attachSocket(QTcpSocket* socket) {
     });
     QObject::connect(socket_, &QTcpSocket::disconnected, [this]() {
         connected_ = false;
-        if (onDisconnected_) onDisconnected_();
+        if (onDisconnected_) {
+            onDisconnected_();
+        }
     });
     QObject::connect(socket_, &QTcpSocket::errorOccurred,
                      [this](QAbstractSocket::SocketError) {
-        if (onError_) onError_(socket_->errorString());
+        if (onError_) {
+            onError_(socket_ ? socket_->errorString() : QString());
+        }
     });
 
     if (role_ == Role::Host) {
         connected_ = true;
-        if (onConnected_) onConnected_();
+        if (onConnected_) {
+            onConnected_();
+        }
     }
 }
 
@@ -105,9 +113,10 @@ void NetworkManager::sendReset() {
 }
 
 void NetworkManager::readAvailable() {
-    if (!socket_) return;
+    if (!socket_) {
+        return;
+    }
     buffer_.append(socket_->readAll());
-
     int idx;
     while ((idx = buffer_.indexOf('\n')) != -1) {
         QByteArray line = buffer_.left(idx);
@@ -122,13 +131,14 @@ void NetworkManager::dispatch(const QByteArray& json) {
     QJsonParseError err;
     QJsonDocument doc = QJsonDocument::fromJson(json, &err);
     if (err.error != QJsonParseError::NoError || !doc.isObject()) {
-        if (onError_) onError_("收到无法解析的消息");
+        if (onError_) {
+            onError_("收到无法解析的消息");
+        }
         return;
     }
 
-    QJsonObject obj = doc.object();
-    QString type = obj["type"].toString();
-
+    const QJsonObject obj = doc.object();
+    const QString type = obj["type"].toString();
     if (type == "HELLO" && onHello_) {
         onHello_(obj["color"].toInt());
     } else if (type == "MOVE" && onMove_) {

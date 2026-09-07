@@ -1,20 +1,26 @@
 #include <QApplication>
+#include <QStringList>
+#include <QTimer>
+
 #include "MainWindow.h"
 
-// Author: [组员姓名待填写]
-// Module: main
-// Description: 应用程序入口
-
-int main(int argc, char *argv[]) {
+int main(int argc, char* argv[]) {
     QApplication app(argc, argv);
-    
-    // 设置应用程序信息
     QCoreApplication::setOrganizationName("GomokuTeam");
     QCoreApplication::setApplicationName("Gomoku");
-    QCoreApplication::setApplicationVersion("1.0");
-    
-    MainWindow window;
+    QCoreApplication::setApplicationVersion("2.0");
+
+    Gomoku::MainWindow window;
     window.show();
-    
+
+    const QStringList args = app.arguments();
+    const int shotIndex = args.indexOf("--screenshot");
+    if (shotIndex >= 0 && shotIndex + 1 < args.size()) {
+        const QString path = args.at(shotIndex + 1);
+        QTimer::singleShot(900, [&window, &app, path]() {
+            window.grab().save(path);
+            app.quit();
+        });
+    }
     return app.exec();
 }
