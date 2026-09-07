@@ -8,6 +8,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLineEdit>
+#include <QHostAddress>
+#include <QNetworkInterface>
 #include <QMessageBox>
 #include <QPainter>
 #include <QRadioButton>
@@ -43,7 +45,17 @@ QString statusTextFor(GameStatus status) {
     }
 }
 
+static QString localNetworkIpv4() {
+    const QList<QHostAddress> addrs = QNetworkInterface::allAddresses();
+    for (const QHostAddress& addr : addrs) {
+        if (addr.protocol() == QAbstractSocket::IPv4Protocol && !addr.isLoopback()) {
+            return addr.toString();
+        }
+    }
+    return QStringLiteral("127.0.0.1");
+}
 } // namespace
+
 
 MainWindow::MainWindow(QWidget* parent)
     : QMainWindow(parent)
@@ -53,41 +65,20 @@ MainWindow::MainWindow(QWidget* parent)
     resize(1180, 800);
     setMinimumSize(960, 700);
 
-    network_.onConnected([this]() {
-        const bool host = network_.role() == NetworkManager::Role::Host;
-        myColor_ = host ? Piece::Black : Piece::White;
-        netConnected_ = true;
-        if (host) {
-            network_.sendHello(0);
-            showNetMessage("对手已加入，黑方先行", false);
-            restartCurrent(false);
-        } else {
-            network_.sendHello(1);
-            showNetMessage("已连接到主机，等待黑方落子", false);
-            restartCurrent(false);
-        }
-    });
-    network_.onDisconnected([this]() {
-        netConnected_ = false;
-        showNetMessage("连接已断开", true);
-        setBoardInteraction();
-        updateStatus();
-    });
-    network_.onError([this](const QString& message) {
-        showNetMessage("网络错误：" + message, true);
-    });
-    network_.onMove([this](int row, int col) {
-        if (netConnected_ && game_.status() == GameStatus::InProgress &&
-            game_.currentPlayer() != myColor_) {
-            doPlace(row, col, false, true);
-        }
-    });
-    network_.onHello([this](int color) {
-        myColor_ = color == 0 ? Piece::White : Piece::Black;
-        updateStatus();
-    });
-    network_.onReset([this]() {
-        restartCurrent(false);
+    session_ = std::make_unique<OnlineSession>(game_, this);
+    connect(session_.get(), &OnlineSession::stateChanged, this, &MainWindow::onNetStateChanged);
+    connect(session_.get(), &OnlineSession::colorAssigned, this, &MainWindow::onNetColorAssigned);
+    connect(session_.get(), &OnlineSession::sessionStarted, this, &MainWindow::onNetSessionStarted);
+    connect(session_.get(), &OnlineSession::moveCommitted, this, &MainWindow::onNetMoveCommitted);
+    connect(session_.get(), &OnlineSession::moveRejected, this, &MainWindow::onNetMoveRejected);
+    connect(session_.get(), &OnlineSession::gameStatusChanged, this, &MainWindow::onNetGameStatusChanged);
+    connect(session_.get(), &OnlineSession::rematchRequested, this, &MainWindow::onNetRematchRequested);
+    connect(session_.get(), &OnlineSession::rematchAccepted, this, &MainWindow::onNetRematchAccepted);
+    connect(session_.get(), &OnlineSession::rematchDeclined, this, &MainWindow::onNetRematchDeclined);
+    connect(session_.get(), &OnlineSession::opponentDisconnected, this, &MainWindow::onNetOpponentDisconnected);
+    connect(session_.get(), &OnlineSession::errorOccurred, this, &MainWindow::onNetError);
+    connect(session_.get(), &OnlineSession::logMessage, this, [this](const QString& text) {
+        Q_UNUSED(text);
     });
 
     setupUi();
@@ -99,7 +90,9 @@ MainWindow::MainWindow(QWidget* parent)
 
 MainWindow::~MainWindow() {
     cancelAi();
-    network_.disconnectPeer();
+    if (session_) {
+        session_->leaveSession();
+    }
 }
 
 void MainWindow::onModeChanged() {
@@ -353,7 +346,7 @@ QWidget* MainWindow::buildSidebar() {
     connect(roleGroup, &QButtonGroup::idClicked, roleRow,
             [this](int id) {
         netAddress_->setEnabled(id == 1);
-        if (!netConnected_) {
+        if (!(session_ && session_->isConnected())) {
             netAction_->setText(id == 0 ? "创建房间" : "加入房间");
         }
     });
@@ -461,9 +454,8 @@ QPixmap MainWindow::makeStonePixmap(int piece, int size) const {
 
 void MainWindow::setMode(Mode mode) {
     cancelAi();
-    if (mode != Mode::Network && network_.isConnected()) {
-        network_.disconnectPeer();
-        netConnected_ = false;
+    if (mode != Mode::Network && session_ && session_->isActive()) {
+        session_->leaveSession();
     }
     mode_ = mode;
 
@@ -494,8 +486,15 @@ void MainWindow::updateModePanel() {
 
 void MainWindow::restartCurrent(bool notifyRemote) {
     cancelAi();
-    if (notifyRemote && netConnected_) {
-        network_.sendReset();
+    if (mode_ == Mode::Network) {
+        if (notifyRemote && session_ && session_->isActive()) {
+            session_->requestRematch();
+        }
+        game_.reset();
+        board_->clearGameVisuals();
+        setBoardInteraction();
+        updateStatus();
+        return;
     }
     game_.reset();
     board_->clearGameVisuals();
@@ -508,6 +507,13 @@ void MainWindow::restartCurrent(bool notifyRemote) {
 }
 
 void MainWindow::doPlace(int row, int col, bool aiMove, bool remote) {
+    if (mode_ == Mode::Network && !remote) {
+        if (session_ && session_->isConnected()) {
+            session_->localMove(row, col);
+        }
+        return;
+    }
+
     if (!game_.canPlace(row, col)) {
         return;
     }
@@ -526,10 +532,6 @@ void MainWindow::doPlace(int row, int col, bool aiMove, bool remote) {
         sounds_->playWin();
     }
 
-    if (!remote && mode_ == Mode::Network && netConnected_) {
-        network_.sendMove(row, col);
-    }
-
     updateStatus();
     if (mode_ == Mode::HumanAI && !aiMove &&
         game_.status() == GameStatus::InProgress &&
@@ -537,7 +539,6 @@ void MainWindow::doPlace(int row, int col, bool aiMove, bool remote) {
         scheduleAi();
     }
 }
-
 void MainWindow::scheduleAi() {
     if (mode_ != Mode::HumanAI || aiThinking_ ||
         game_.status() != GameStatus::InProgress ||
@@ -630,12 +631,11 @@ void MainWindow::onUndo() {
 }
 
 void MainWindow::onRestart() {
-    if (mode_ == Mode::Network && !netConnected_) {
+    if (mode_ == Mode::Network && !(session_ && session_->isConnected())) {
         return;
     }
     restartCurrent(true);
 }
-
 void MainWindow::onSoundToggle() {
     SkinDialog dialog(&settings_, SkinDialog::Sound, this);
     connect(&dialog, &SkinDialog::applied, this, [this]() {
@@ -655,42 +655,47 @@ void MainWindow::onSkinDialog() {
 }
 
 void MainWindow::onNetAction() {
-    if (netConnected_) {
+    if (session_ && session_->isActive()) {
         stopNetwork();
     } else {
         startNetwork();
     }
 }
-
 void MainWindow::startNetwork() {
     cancelAi();
+    if (!session_) {
+        showNetMessage("网络组件未初始化", true);
+        return;
+    }
     game_.reset();
     board_->clearGameVisuals();
 
     const bool host = netHost_->isChecked();
     const int port = netPort_->value();
     if (host) {
-        myColor_ = Piece::Black;
-        if (!network_.listen(static_cast<quint16>(port))) {
+        if (!session_->startHost(static_cast<quint16>(port))) {
+            session_->leaveSession();
             showNetMessage("端口监听失败，请更换端口", true);
+            updateStatus();
             return;
         }
-        showNetMessage("已开启房间，等待对手加入", false);
+        const QString ip = localNetworkIpv4();
+        showNetMessage(QStringLiteral("已开启房间，等待对手加入\n本机IP: %1  端口: %2")
+                       .arg(ip).arg(port), false);
         netAction_->setText("断开连接");
     } else {
-        myColor_ = Piece::White;
         const QString address = netAddress_->text().trimmed();
-        network_.connectToHost(address, static_cast<quint16>(port));
-        showNetMessage("正在连接主机...", false);
+        session_->connectToHost(address, static_cast<quint16>(port));
+        showNetMessage(QStringLiteral("正在连接主机 %1:%2 ...").arg(address).arg(port), false);
         netAction_->setText("断开连接");
     }
     setBoardInteraction();
     updateStatus();
 }
-
 void MainWindow::stopNetwork() {
-    network_.disconnectPeer();
-    netConnected_ = false;
+    if (session_) {
+        session_->leaveSession();
+    }
     showNetMessage("已断开连接", false);
     netAction_->setText(netHost_->isChecked() ? "创建房间" : "加入房间");
     game_.reset();
@@ -698,7 +703,6 @@ void MainWindow::stopNetwork() {
     setBoardInteraction();
     updateStatus();
 }
-
 bool MainWindow::canHumanInput() const {
     if (aiThinking_ || game_.status() != GameStatus::InProgress) {
         return false;
@@ -707,11 +711,11 @@ bool MainWindow::canHumanInput() const {
         return game_.currentPlayer() == humanPiece();
     }
     if (mode_ == Mode::Network) {
-        return netConnected_ && game_.currentPlayer() == myColor_;
+        return session_ && session_->isConnected() &&
+               game_.currentPlayer() == session_->myColor();
     }
     return true;
 }
-
 void MainWindow::setBoardInteraction() {
     board_->setGhostAllowed(canHumanInput());
     board_->setThinking(aiThinking_);
@@ -830,12 +834,13 @@ void MainWindow::updateStatus() {
         text = game_.currentPlayer() == humanPiece() ? "你的回合" : "AI 回合";
         activeColor = game_.currentPlayer();
     } else if (mode_ == Mode::Network) {
-        if (!netConnected_) {
+        const bool connected = session_ && session_->isConnected();
+        if (!connected) {
             text = netHost_->isChecked() ? "等待对手加入" : "等待主机";
         } else {
             text = game_.currentPlayer() == myColor_ ? "你的回合" : "对方回合";
         }
-        activeColor = netConnected_ ? game_.currentPlayer() : Piece::Black;
+        activeColor = connected ? game_.currentPlayer() : Piece::Black;
     } else {
         text = pieceText(game_.currentPlayer()) + "回合";
         activeColor = game_.currentPlayer();
@@ -873,7 +878,7 @@ void MainWindow::updateStatus() {
         whiteName = humanBlack ? "AI" : "你";
         whiteTag = humanBlack ? "AI · 后手" : "你 · 后手";
     } else if (mode_ == Mode::Network) {
-        const bool host = network_.role() == NetworkManager::Role::Host;
+        const bool host = session_ && session_->isHost();
         blackName = myColor_ == Piece::Black ? "我" : "对方";
         whiteName = myColor_ == Piece::White ? "我" : "对方";
         blackTag = host ? "主机" : "客户端";
@@ -887,6 +892,74 @@ void MainWindow::updateStatus() {
     undoButton_->setEnabled(!aiThinking_ &&
         mode_ != Mode::Network && game_.moveCount() > 0);
     setBoardInteraction();
+}
+
+void MainWindow::onNetMoveCommitted(int row, int col, Piece piece, GameStatus status) {
+    Q_UNUSED(status);
+    board_->playPlaceEffect(row, col, piece);
+    sounds_->playPlace(piece);
+    updateStatus();
+}
+
+void MainWindow::onNetGameStatusChanged(GameStatus status, const std::vector<GameMove>& line, bool online) {
+    Q_UNUSED(online);
+    if (status == GameStatus::BlackWin || status == GameStatus::WhiteWin) {
+        if (!line.empty() && settings_.winEffect != "none") {
+            board_->playWinEffect(line);
+        }
+        sounds_->playWin();
+    }
+    updateStatus();
+}
+
+void MainWindow::onNetMoveRejected(const QString& reason) {
+    showNetMessage("落子被拒绝: " + reason, true);
+}
+
+void MainWindow::onNetStateChanged(OnlineState state) {
+    Q_UNUSED(state);
+    updateStatus();
+}
+
+void MainWindow::onNetColorAssigned(Piece color) {
+    myColor_ = color;
+    updateStatus();
+}
+
+void MainWindow::onNetSessionStarted() {
+    board_->clearGameVisuals();
+    setBoardInteraction();
+    updateStatus();
+}
+
+void MainWindow::onNetRematchRequested() {
+    const auto answer = QMessageBox::question(
+        this, "重赛请求", "对方请求重赛，是否接受？",
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    if (answer == QMessageBox::Yes) {
+        session_->answerRematch(true);
+    } else {
+        session_->answerRematch(false);
+    }
+}
+
+void MainWindow::onNetRematchAccepted() {
+    board_->clearGameVisuals();
+    updateStatus();
+}
+
+void MainWindow::onNetRematchDeclined() {
+    showNetMessage("对方拒绝重赛", true);
+}
+
+void MainWindow::onNetOpponentDisconnected() {
+    showNetMessage("对手已断开连接", true);
+    updateStatus();
+}
+
+void MainWindow::onNetError(const QString& text) {
+    showNetMessage("网络错误: " + text, true);
+    updateStatus();
 }
 
 } // namespace Gomoku

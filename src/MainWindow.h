@@ -10,9 +10,12 @@
 #include <QFutureWatcher>
 #include <QPair>
 
+#include <memory>
+#include <vector>
+
 #include "AppSettings.h"
 #include "GomokuCore.h"
-#include "NetworkManager.h"
+#include "OnlineSession.h"
 
 class QButtonGroup;
 class QComboBox;
@@ -40,6 +43,18 @@ private slots:
     void onModeChanged();
     void onNetAction();
     void onAiFinished(int token);
+
+    void onNetStateChanged(OnlineState state);
+    void onNetColorAssigned(Piece color);
+    void onNetSessionStarted();
+    void onNetMoveCommitted(int row, int col, Piece piece, GameStatus status);
+    void onNetGameStatusChanged(GameStatus status, const std::vector<GameMove>& line, bool online);
+    void onNetMoveRejected(const QString& reason);
+    void onNetRematchRequested();
+    void onNetRematchAccepted();
+    void onNetRematchDeclined();
+    void onNetOpponentDisconnected();
+    void onNetError(const QString& text);
 
 private:
     enum class Mode {
@@ -79,10 +94,13 @@ private:
         return humanIsBlack_ ? Piece::White : Piece::Black;
     }
     bool canHumanInput() const;
+    bool isNetActive() const {
+        return session_ && session_->isConnected();
+    }
 
     GameEngine game_;
     AppSettings settings_;
-    NetworkManager network_;
+    std::unique_ptr<OnlineSession> session_;
 
     BoardWidget* board_ = nullptr;
     SoundManager* sounds_ = nullptr;
@@ -124,7 +142,6 @@ private:
     Mode mode_ = Mode::HumanHuman;
     bool humanIsBlack_ = true;
     bool aiThinking_ = false;
-    bool netConnected_ = false;
     int aiToken_ = 0;
     QFutureWatcher<QPair<int, int>>* aiWatcher_ = nullptr;
 

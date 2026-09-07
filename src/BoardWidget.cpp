@@ -215,7 +215,8 @@ void BoardWidget::drawGrid(QPainter& painter) {
     for (int i = 0; i < kSide; i++) {
         const int pos = area.left() + i * cell;
         painter.drawLine(pos, area.top(), pos, area.bottom());
-        painter.drawLine(area.left(), pos, area.right(), pos);
+        const int posY = area.top() + i * cell;
+        painter.drawLine(area.left(), posY, area.right(), posY);
     }
 
     painter.setPen(Qt::NoPen);

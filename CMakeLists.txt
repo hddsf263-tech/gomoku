@@ -14,7 +14,11 @@ add_executable(Gomoku
     src/BoardWidget.cpp
     src/GomokuCore.cpp
     src/MainWindow.cpp
-    src/NetworkManager.cpp
+    src/NetLink.cpp
+    src/OnlineSession.cpp
+    include/NetLink.h
+    include/NetProtocol.h
+    include/OnlineSession.h
     src/SkinDialog.cpp
     src/SoundManager.cpp
 )
@@ -34,6 +38,7 @@ target_link_libraries(Gomoku PRIVATE
 )
 
 enable_testing()
+
 add_executable(gomoku_core_tests
     tests/core_tests.cpp
     src/GomokuCore.cpp
@@ -42,4 +47,21 @@ target_include_directories(gomoku_core_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
+target_link_libraries(gomoku_core_tests PRIVATE Qt6::Core Qt6::Network)
 add_test(NAME gomoku_core_tests COMMAND gomoku_core_tests)
+
+add_executable(online_session_tests
+    tests/online_session_tests.cpp
+    src/GomokuCore.cpp
+    src/NetLink.cpp
+    src/OnlineSession.cpp
+    include/NetLink.h
+    include/NetProtocol.h
+    include/OnlineSession.h
+)
+target_include_directories(online_session_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+target_link_libraries(online_session_tests PRIVATE Qt6::Core Qt6::Network)
+add_test(NAME online_session_tests COMMAND online_session_tests)
