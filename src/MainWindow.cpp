@@ -115,10 +115,12 @@ void MainWindow::setupUi() {
         "QLabel#title{font-size:25px;font-weight:800;color:#1f2623;}"
         "QLabel#mutedLabel{color:#6b746f;font-size:13px;}"
         "QLabel#moveText{color:#1f2623;font-size:15px;font-weight:700;}"
-        "QPushButton#navBtn{height:42px;border:1px solid #d8d7cf;"
+        "QPushButton#modeHuman,QPushButton#modeAI,QPushButton#modeNet{"
+        "height:42px;border:1px solid #d8d7cf;"
         "border-radius:8px;background:rgba(255,255,255,0.9);"
         "font-size:14px;font-weight:700;color:#6b746f;}"
-        "QPushButton#navBtn:checked{background:#2e5d52;border-color:#2e5d52;"
+        "QPushButton#modeHuman:checked,QPushButton#modeAI:checked,"
+        "QPushButton#modeNet:checked{background:#2e5d52;border-color:#2e5d52;"
         "color:#ffffff;}"
         "QPushButton#actionBtn{height:44px;border:1px solid #d8d7cf;"
         "border-radius:8px;background:#ffffff;font-weight:700;color:#1f2623;}"
@@ -151,6 +153,7 @@ void MainWindow::setupUi() {
     body->setSpacing(28);
 
     board_ = new BoardWidget(this);
+    board_->setObjectName("board");
     board_->setGame(&game_);
     connect(board_, &BoardWidget::positionClicked,
             this, [this](int row, int col) {
@@ -187,6 +190,7 @@ QWidget* MainWindow::buildHeader() {
     statusDot_ = new QLabel(pill);
     statusDot_->setFixedSize(15, 15);
     statusText_ = new QLabel("黑方回合", pill);
+    statusText_->setObjectName("statusText");
     statusText_->setStyleSheet("font-weight:700;color:#1f2623;");
     pillLayout->addWidget(statusDot_);
     pillLayout->addWidget(statusText_);
@@ -218,13 +222,17 @@ QWidget* MainWindow::buildModeBar() {
     modeAI_ = new QPushButton("人机", bar);
     modeNet_ = new QPushButton("联机", bar);
     for (QPushButton* button : { modeHuman_, modeAI_, modeNet_ }) {
-        button->setObjectName("navBtn");
+        button->setObjectName(button == modeHuman_ ? "modeHuman"
+                              : button == modeAI_ ? "modeAI"
+                              : "modeNet");
         button->setCheckable(true);
         button->setCursor(Qt::PointingHandCursor);
         button->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-        group->addButton(button);
         layout->addWidget(button);
     }
+    group->addButton(modeHuman_, 0);
+    group->addButton(modeAI_, 1);
+    group->addButton(modeNet_, 2);
     connect(group, &QButtonGroup::idClicked,
             this, [this](int id) {
         if (id == 0) {
@@ -629,14 +637,16 @@ void MainWindow::onRestart() {
 }
 
 void MainWindow::onSoundToggle() {
-    settings_.muted = !settings_.muted;
-    sounds_->setMuted(settings_.muted);
-    setSoundButtonUi();
-    saveSettings();
+    SkinDialog dialog(&settings_, SkinDialog::Sound, this);
+    connect(&dialog, &SkinDialog::applied, this, [this]() {
+        applySettings();
+        saveSettings();
+    });
+    dialog.exec();
 }
 
 void MainWindow::onSkinDialog() {
-    SkinDialog dialog(&settings_, this);
+    SkinDialog dialog(&settings_, SkinDialog::Appearance, this);
     connect(&dialog, &SkinDialog::applied, this, [this]() {
         applySettings();
         saveSettings();

@@ -17,7 +17,13 @@ class SkinDialog : public QDialog {
     Q_OBJECT
 
 public:
-    explicit SkinDialog(AppSettings* settings, QWidget* parent = nullptr);
+    enum Mode {
+        Appearance,
+        Sound
+    };
+
+    explicit SkinDialog(AppSettings* settings, Mode mode,
+                        QWidget* parent = nullptr);
 
 signals:
     void applied();
@@ -44,9 +50,9 @@ private:
     void chooseFile(QString AppSettings::* target, const QString& filter);
 
     AppSettings* settings_;
+    Mode mode_;
     QVBoxLayout* contentLayout_ = nullptr;
     QList<ChoiceGroup> groups_;
-    QList<QPushButton*> resetTargets_;
 };
 
 } // namespace Gomoku

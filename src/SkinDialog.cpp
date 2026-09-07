@@ -1,22 +1,21 @@
 #include "SkinDialog.h"
 
+#include <QCheckBox>
 #include <QFileDialog>
-#include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QVBoxLayout>
 
-#include <algorithm>
-
 namespace Gomoku {
 
-SkinDialog::SkinDialog(AppSettings* settings, QWidget* parent)
+SkinDialog::SkinDialog(AppSettings* settings, Mode mode, QWidget* parent)
     : QDialog(parent)
     , settings_(settings)
+    , mode_(mode)
 {
-    setWindowTitle("皮肤与特效");
+    setWindowTitle(mode == Sound ? "音效设置" : "皮肤与特效");
     setModal(true);
     setMinimumSize(430, 620);
     resize(460, 700);
@@ -32,7 +31,7 @@ void SkinDialog::buildUi() {
     header->setStyleSheet("background:#ffffff; border-bottom:1px solid #e4e2da;");
     auto* headerLayout = new QHBoxLayout(header);
     headerLayout->setContentsMargins(18, 0, 12, 0);
-    auto* title = new QLabel("皮肤与特效", header);
+    auto* title = new QLabel(mode_ == Sound ? "音效设置" : "皮肤与特效", header);
     title->setStyleSheet("font-size:17px; font-weight:700; color:#1f2623;");
     headerLayout->addWidget(title);
     headerLayout->addStretch();
@@ -57,50 +56,76 @@ void SkinDialog::buildUi() {
     scroll->setWidget(scrollContent);
     root->addWidget(scroll, 1);
 
-    addChoiceSection("棋盘皮肤", { "翡翠", "原木", "墨玉", "红木" },
-                     { "jade", "wood", "ink", "rose" },
-                     &AppSettings::boardSkin);
-    addUploadRow("自定义棋盘照片", "上传棋盘", &AppSettings::boardImage,
-                 "图片 (*.png *.jpg *.jpeg *.bmp *.webp)");
+    if (mode_ == Sound) {
+        addChoiceSection("落子音效", { "木声", "清脆", "水滴", "静音", "自定义" },
+                         { "wood", "click", "bubble", "silent", "custom" },
+                         &AppSettings::placeSound);
+        addChoiceSection("获胜音效", { "和弦", "欢快", "科幻", "静音", "自定义" },
+                         { "chord", "rising", "sci", "silent", "custom" },
+                         &AppSettings::winSound);
+        addUploadRow("自定义落子音频", "导入落子音频", &AppSettings::customPlaceAudio,
+                     "音频 (*.wav *.mp3 *.ogg *.m4a *.aac)");
+        addUploadRow("自定义获胜音频", "导入获胜音频", &AppSettings::customWinAudio,
+                     "音频 (*.wav *.mp3 *.ogg *.m4a *.aac)");
 
-    addChoiceSection("棋子皮肤", { "经典", "玉石", "曜石", "琥珀" },
-                     { "classic", "jade", "onyx", "amber" },
-                     &AppSettings::pieceSkin);
-    addUploadRow("黑棋照片", "上传黑棋", &AppSettings::blackImage,
-                 "图片 (*.png *.jpg *.jpeg *.bmp *.webp)");
-    addUploadRow("白棋照片", "上传白棋", &AppSettings::whiteImage,
-                 "图片 (*.png *.jpg *.jpeg *.bmp *.webp)");
+        auto* mute = new QCheckBox("启用音效", scrollContent);
+        mute->setChecked(!settings_->muted);
+        mute->setStyleSheet("font-weight:700;color:#1f2623;spacing:8px;");
+        connect(mute, &QCheckBox::toggled, this, [this](bool checked) {
+            settings_->muted = !checked;
+            emit applied();
+        });
+        contentLayout_->addWidget(mute);
+    } else {
+        addChoiceSection("棋盘皮肤", { "翡翠", "原木", "墨玉", "红木" },
+                         { "jade", "wood", "ink", "rose" },
+                         &AppSettings::boardSkin);
+        addUploadRow("自定义棋盘照片", "上传棋盘", &AppSettings::boardImage,
+                     "图片 (*.png *.jpg *.jpeg *.bmp *.webp)");
 
-    addChoiceSection("落子特效", { "光环", "星光", "关闭" },
-                     { "ring", "spark", "none" },
-                     &AppSettings::placeEffect);
-    addChoiceSection("获胜特效", { "金色脉冲", "彩带爆裂", "关闭" },
-                     { "pulse", "burst", "none" },
-                     &AppSettings::winEffect);
-    addChoiceSection("落子音效", { "木声", "清脆", "水滴", "静音", "自定义" },
-                     { "wood", "click", "bubble", "silent", "custom" },
-                     &AppSettings::placeSound);
-    addChoiceSection("获胜音效", { "和弦", "欢快", "科幻", "静音", "自定义" },
-                     { "chord", "rising", "sci", "silent", "custom" },
-                     &AppSettings::winSound);
-    addUploadRow("自定义落子音频", "导入落子音频", &AppSettings::customPlaceAudio,
-                 "音频 (*.wav *.mp3 *.ogg *.m4a *.aac)");
-    addUploadRow("自定义获胜音频", "导入获胜音频", &AppSettings::customWinAudio,
-                 "音频 (*.wav *.mp3 *.ogg *.m4a *.aac)");
+        addChoiceSection("棋子皮肤", { "经典", "玉石", "曜石", "琥珀" },
+                         { "classic", "jade", "onyx", "amber" },
+                         &AppSettings::pieceSkin);
+        addUploadRow("黑棋照片", "上传黑棋", &AppSettings::blackImage,
+                     "图片 (*.png *.jpg *.jpeg *.bmp *.webp)");
+        addUploadRow("白棋照片", "上传白棋", &AppSettings::whiteImage,
+                     "图片 (*.png *.jpg *.jpeg *.bmp *.webp)");
 
-    auto* resetButton = new QPushButton("恢复默认设置", scrollContent);
+        addChoiceSection("落子特效", { "光环", "星光", "关闭" },
+                         { "ring", "spark", "none" },
+                         &AppSettings::placeEffect);
+        addChoiceSection("获胜特效", { "金色脉冲", "彩带爆裂", "关闭" },
+                         { "pulse", "burst", "none" },
+                         &AppSettings::winEffect);
+    }
+
+    auto* footer = new QWidget(this);
+    auto* footerLayout = new QHBoxLayout(footer);
+    footerLayout->setContentsMargins(0, 0, 0, 0);
+    footerLayout->setSpacing(10);
+
+    auto* resetButton = new QPushButton("恢复默认", footer);
     resetButton->setCursor(Qt::PointingHandCursor);
     resetButton->setStyleSheet(
-        "QPushButton{height:40px;border:1px solid #d8d7cf;border-radius:7px;"
-        "background:#fff;font-weight:600;color:#1f2623;}"
+        "QPushButton{height:42px;border:1px solid #d8d7cf;border-radius:8px;"
+        "background:#fff;font-weight:700;color:#1f2623;padding:0 12px;}"
         "QPushButton:hover{background:#f2f1ec;}");
     connect(resetButton, &QPushButton::clicked, this, [this]() {
         *settings_ = AppSettings();
         refreshChoices();
         emit applied();
     });
-    contentLayout_->addWidget(resetButton);
-    contentLayout_->addStretch();
+    footerLayout->addWidget(resetButton);
+
+    auto* confirmButton = new QPushButton("完成", footer);
+    confirmButton->setCursor(Qt::PointingHandCursor);
+    confirmButton->setStyleSheet(
+        "QPushButton{height:42px;border-radius:8px;background:#2e5d52;"
+        "color:#ffffff;font-weight:800;border:none;padding:0 14px;}"
+        "QPushButton:hover{background:#38705f;}");
+    connect(confirmButton, &QPushButton::clicked, this, &QDialog::accept);
+    footerLayout->addWidget(confirmButton);
+    contentLayout_->addWidget(footer);
 }
 
 QPushButton* SkinDialog::makeChoiceButton(const QString& label,
