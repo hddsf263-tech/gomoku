@@ -133,18 +133,32 @@ void generateWinSci(const QString& path) {
 
 SoundManager::SoundManager(QObject* parent)
     : QObject(parent)
-    , effect_(new QSoundEffect(this))
     , customPlayer_(new QMediaPlayer(this))
     , audioOutput_(new QAudioOutput(this))
 {
     audioOutput_->setVolume(0.9);
     customPlayer_->setAudioOutput(audioOutput_);
+    connect(customPlayer_, &QMediaPlayer::mediaStatusChanged,
+            this, [this](QMediaPlayer::MediaStatus status) {
+        if (!muted_ && pendingCustomPlay_ &&
+            (status == QMediaPlayer::BufferedMedia ||
+             status == QMediaPlayer::LoadedMedia)) {
+            pendingCustomPlay_ = false;
+            customPlayer_->play();
+        }
+    });
+    ensureAllEffects();
 }
 
 SoundManager::~SoundManager() = default;
 
 void SoundManager::setMuted(bool muted) {
     muted_ = muted;
+    if (muted_) {
+        pendingEffectPlays_.clear();
+        pendingCustomPlay_ = false;
+        customPlayer_->stop();
+    }
 }
 
 void SoundManager::setPlaceSound(const QString& mode, const QString& customPath) {
@@ -163,7 +177,10 @@ QString SoundManager::ensureWav(const QString& name,
         QStandardPaths::TempLocation);
     const QString path = directory + "/gomoku-" + name + ".wav";
     if (QFileInfo::exists(path)) {
-        return path;
+        if (QFileInfo(path).size() > 100) {
+            return path;
+        }
+        QFile::remove(path);
     }
     if (generatorKey == "place-wood-black") {
         generatePlaceWood(path, true);
@@ -185,35 +202,101 @@ QString SoundManager::ensureWav(const QString& name,
 
 void SoundManager::playBuiltin(const QString& key) {
     QString path;
+    QString effectKey;
     if (key == "wood-black") {
         path = ensureWav("place-wood-black", "place-wood-black");
+        effectKey = "place-wood-black";
     } else if (key == "wood-white") {
         path = ensureWav("place-wood-white", "place-wood-white");
+        effectKey = "place-wood-white";
     } else if (key == "click") {
         path = ensureWav("place-click", "place-click");
+        effectKey = "place-click";
     } else if (key == "bubble") {
         path = ensureWav("place-bubble", "place-bubble");
+        effectKey = "place-bubble";
     } else if (key == "chord") {
         path = ensureWav("win-chord", "win-chord");
+        effectKey = "win-chord";
     } else if (key == "rising") {
         path = ensureWav("win-rising", "win-rising");
+        effectKey = "win-rising";
     } else if (key == "sci") {
         path = ensureWav("win-sci", "win-sci");
+        effectKey = "win-sci";
     }
-    if (path.isEmpty() || !QFileInfo::exists(path)) {
+    if (path.isEmpty() || effectKey.isEmpty() || !QFileInfo::exists(path)) {
         return;
     }
-    effect_->setSource(QUrl::fromLocalFile(path));
-    effect_->play();
+    QSoundEffect* effect = effects_.value(effectKey);
+    if (!effect) {
+        effect = new QSoundEffect(this);
+        effect->setVolume(0.9);
+        effects_.insert(effectKey, effect);
+        connect(effect, &QSoundEffect::statusChanged,
+                this, [this, effect, effectKey]() {
+            if (effect->status() == QSoundEffect::Error) {
+                pendingEffectPlays_.remove(effectKey);
+            } else if (effect->status() == QSoundEffect::Ready &&
+                       pendingEffectPlays_.remove(effectKey) && !muted_) {
+                effect->play();
+            }
+        });
+        effect->setSource(QUrl::fromLocalFile(path));
+    }
+    if (effect->status() == QSoundEffect::Ready) {
+        effect->play();
+    } else {
+        pendingEffectPlays_.insert(effectKey);
+    }
+}
+
+void SoundManager::ensureAllEffects() {
+    const QStringList keys = {
+        "place-wood-black", "place-wood-white", "place-click",
+        "place-bubble", "win-chord", "win-rising", "win-sci"
+    };
+    for (const QString& key : keys) {
+        QString path;
+        if (key.startsWith("place-wood-")) {
+            path = ensureWav(key, key);
+        } else if (key.startsWith("place-")) {
+            path = ensureWav(key, key);
+        } else {
+            path = ensureWav(key, key);
+        }
+        if (path.isEmpty()) {
+            continue;
+        }
+        QSoundEffect* effect = new QSoundEffect(this);
+        effect->setVolume(0.9);
+        effects_.insert(key, effect);
+        connect(effect, &QSoundEffect::statusChanged,
+                this, [this, effect, key]() {
+            if (effect->status() == QSoundEffect::Error) {
+                pendingEffectPlays_.remove(key);
+            } else if (effect->status() == QSoundEffect::Ready &&
+                       pendingEffectPlays_.remove(key) && !muted_) {
+                effect->play();
+            }
+        });
+        effect->setSource(QUrl::fromLocalFile(path));
+    }
 }
 
 void SoundManager::playCustom(const QString& path) {
     if (path.isEmpty() || !QFileInfo::exists(path)) {
         return;
     }
+    pendingCustomPlay_ = false;
     customPlayer_->stop();
     customPlayer_->setSource(QUrl::fromLocalFile(path));
-    customPlayer_->play();
+    if (customPlayer_->mediaStatus() == QMediaPlayer::BufferedMedia ||
+        customPlayer_->mediaStatus() == QMediaPlayer::LoadedMedia) {
+        customPlayer_->play();
+    } else {
+        pendingCustomPlay_ = true;
+    }
 }
 
 void SoundManager::playPlace(Piece piece) {
@@ -237,6 +320,16 @@ void SoundManager::playWin() {
         return;
     }
     playBuiltin(winMode_);
+}
+
+int SoundManager::readyBuiltinCount() const {
+    int ready = 0;
+    for (QSoundEffect* effect : effects_) {
+        if (effect && effect->status() == QSoundEffect::Ready) {
+            ready++;
+        }
+    }
+    return ready;
 }
 
 } // namespace Gomoku
