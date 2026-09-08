@@ -14,10 +14,8 @@ namespace Gomoku {
 namespace {
 
 constexpr int kSide = 15;
-constexpr int kLeft = 28;
-constexpr int kTop = 24;
-constexpr int kRight = 12;
-constexpr int kBottom = 10;
+constexpr int kBoardGap = 8;
+constexpr int kGridInset = 34;
 
 QColor alphaColor(const QColor& color, int alpha) {
     QColor result = color;
@@ -139,25 +137,38 @@ void BoardWidget::clearGameVisuals() {
 }
 
 int BoardWidget::cellSize() const {
-    const QRect area = gridArea();
-    return qMax(16, qMin(area.width(), area.height()) / (kSide - 1));
+    return gridArea().width() / (kSide - 1);
+}
+
+QRect BoardWidget::boardRect() const {
+    const int side = qMax(240, qMin(width(), height()) - 2 * kBoardGap);
+    return QRect((width() - side) / 2, (height() - side) / 2, side, side);
 }
 
 QRect BoardWidget::gridArea() const {
-    const int areaWidth = qMax(100, width() - kLeft - kRight);
-    const int areaHeight = qMax(100, height() - kTop - kBottom);
-    const int cell = qMin(areaWidth, areaHeight) / (kSide - 1);
+    const QRect board = boardRect();
+    const int available = board.width() - 2 * kGridInset;
+    const int cell = qMax(10, available / (kSide - 1));
     const int side = cell * (kSide - 1);
-    return QRect(kLeft + (areaWidth - side) / 2,
-                 kTop + (areaHeight - side) / 2,
+    return QRect(board.center().x() - side / 2,
+                 board.center().y() - side / 2,
                  side,
                  side);
 }
 
-QPoint BoardWidget::gridToScreen(int row, int col) const {
+QPointF BoardWidget::gridToScreenF(int row, int col) const {
     const QRect area = gridArea();
-    const int cell = area.width() / (kSide - 1);
-    return QPoint(area.left() + col * cell, area.top() + row * cell);
+    const int cell = cellSize();
+    const qreal dpr = qMax<qreal>(1.0, devicePixelRatioF());
+    // Snap to the center of a device pixel so 1px grid lines stay crisp
+    // instead of being split across two pixels on HiDPI screens.
+    return QPointF((qRound((area.left() + col * cell) * dpr) + 0.5) / dpr,
+                   (qRound((area.top() + row * cell) * dpr) + 0.5) / dpr);
+}
+
+QPoint BoardWidget::gridToScreen(int row, int col) const {
+    const QPointF point = gridToScreenF(row, col);
+    return QPoint(qRound(point.x()), qRound(point.y()));
 }
 
 void BoardWidget::paintEvent(QPaintEvent* event) {
@@ -178,71 +189,83 @@ void BoardWidget::paintEvent(QPaintEvent* event) {
 }
 
 void BoardWidget::drawBackground(QPainter& painter) {
-    painter.fillRect(rect(), QColor(242, 241, 236));
-    const QRect area = gridArea();
-    const QRect boardRect = area.adjusted(-10, -10, 10, 10);
+    painter.fillRect(rect(), QColor(240, 239, 233));
+    const QRect board = boardRect();
 
     QPainterPath path;
-    path.addRoundedRect(boardRect, 12, 12);
+    path.addRoundedRect(board, 10, 10);
+    painter.setRenderHint(QPainter::Antialiasing);
+
+    QPainterPath shadow;
+    shadow.addRoundedRect(board.translated(3, 5), 11, 11);
+    painter.fillPath(shadow, QColor(0, 0, 0, 42));
+
     if (!boardImage_.isNull()) {
         painter.save();
         painter.setClipPath(path);
-        painter.drawPixmap(boardRect, boardImage_);
-        painter.setBrush(QColor(14, 26, 22, 55));
-        painter.setPen(Qt::NoPen);
-        painter.drawRect(boardRect);
+        painter.drawPixmap(board, boardImage_);
+        painter.fillRect(board, QColor(14, 26, 22, 32));
         painter.restore();
     } else {
-        QLinearGradient gradient(boardRect.topLeft(), boardRect.bottomRight());
-        gradient.setColorAt(0, boardBase_.lighter(108));
-        gradient.setColorAt(1, boardBase_.darker(112));
+        QLinearGradient gradient(board.topLeft(), board.bottomRight());
+        gradient.setColorAt(0, boardBase_.lighter(110));
+        gradient.setColorAt(1, boardBase_.darker(116));
         painter.setPen(Qt::NoPen);
         painter.setBrush(gradient);
         painter.drawPath(path);
     }
 
-    painter.setPen(QPen(QColor(0, 0, 0, 45), 1));
+    painter.setPen(QPen(QColor(0, 0, 0, 60), 1));
     painter.setBrush(Qt::NoBrush);
     painter.drawPath(path);
 }
 
 void BoardWidget::drawGrid(QPainter& painter) {
-    const QRect area = gridArea();
-    const int cell = area.width() / (kSide - 1);
-
     QPen gridPen(lineColor_, 1);
+    gridPen.setCosmetic(true);
     painter.setPen(gridPen);
     for (int i = 0; i < kSide; i++) {
-        const int pos = area.left() + i * cell;
-        painter.drawLine(pos, area.top(), pos, area.bottom());
-        painter.drawLine(area.left(), pos, area.right(), pos);
+        const QPointF verticalTop = gridToScreenF(0, i);
+        const QPointF verticalBottom = gridToScreenF(kSide - 1, i);
+        const QPointF horizontalLeft = gridToScreenF(i, 0);
+        const QPointF horizontalRight = gridToScreenF(i, kSide - 1);
+        painter.drawLine(QLineF(verticalTop.x(), verticalTop.y(),
+                                verticalTop.x(), verticalBottom.y()));
+        painter.drawLine(QLineF(horizontalLeft.x(), horizontalLeft.y(),
+                                horizontalRight.x(), horizontalLeft.y()));
     }
 
     painter.setPen(Qt::NoPen);
     painter.setBrush(starColor_);
     static const int stars[5][2] = { {3, 3}, {3, 11}, {7, 7}, {11, 3}, {11, 11} };
+    const int starRadius = qMax(2, cellSize() / 7);
     for (const auto& star : stars) {
-        const QPoint p = gridToScreen(star[0], star[1]);
-        painter.drawEllipse(p, 3, 3);
+        const QPointF p = gridToScreenF(star[0], star[1]);
+        painter.drawEllipse(p, starRadius, starRadius);
     }
 }
 
 void BoardWidget::drawCoordinates(QPainter& painter) {
     const QRect area = gridArea();
-    const int cell = area.width() / (kSide - 1);
+    const QRect board = boardRect();
+    const int cell = cellSize();
     QFont font = painter.font();
-    font.setPixelSize(10);
-    font.setWeight(QFont::DemiBold);
+    font.setPixelSize(qMax(8, qMin(11, cell / 3)));
+    font.setWeight(QFont::Medium);
     painter.setFont(font);
-    painter.setPen(QColor(107, 116, 111));
+    painter.setPen(lineColor_);
 
     for (int i = 0; i < kSide; i++) {
-        const QPoint top = gridToScreen(0, i);
-        const QPoint left = gridToScreen(i, 0);
-        painter.drawText(QRect(top.x() - 40, 2, 80, 18),
-                         Qt::AlignCenter, QString(QChar('A' + i)));
-        painter.drawText(QRect(0, left.y() - 8, kLeft - 4, 16),
-                         Qt::AlignRight, QString::number(i + 1));
+        const int x = qRound(gridToScreenF(0, i).x());
+        const int y = qRound(gridToScreenF(i, 0).y());
+        const QRect topRect(x - cell / 2, board.top() + 2,
+                            cell, area.top() - board.top() - 7);
+        painter.drawText(topRect, Qt::AlignCenter, QString(QChar('A' + i)));
+        const QRect leftRect(board.left() + 3, y - cell / 2,
+                             area.left() - board.left() - 6, cell);
+        painter.drawText(leftRect,
+                         Qt::AlignRight | Qt::AlignVCenter,
+                         QString::number(i + 1));
     }
 }
 
@@ -253,8 +276,8 @@ void BoardWidget::drawGhost(QPainter& painter) {
         return;
     }
 
-    const QPoint center = gridToScreen(hoverRow_, hoverCol_);
-    const int cell = gridArea().width() / (kSide - 1);
+    const QPointF center = gridToScreenF(hoverRow_, hoverCol_);
+    const int cell = cellSize();
     const double radius = cell * 0.42;
     const Piece piece = game_->currentPlayer();
     const bool isBlack = piece == Piece::Black;
@@ -262,12 +285,12 @@ void BoardWidget::drawGhost(QPainter& painter) {
     QPen pen(isBlack ? QColor(255, 255, 255, 90) : QColor(40, 48, 46, 70), 1.5);
     painter.setPen(pen);
     painter.setBrush(fill);
-    painter.drawEllipse(center, static_cast<int>(radius), static_cast<int>(radius));
+    painter.drawEllipse(center, radius, radius);
 }
 
 void BoardWidget::drawStones(QPainter& painter) {
-    const int cell = gridArea().width() / (kSide - 1);
-    const double radius = cell * 0.43;
+    const double cell = cellSize();
+    const double radius = cell * 0.44;
 
     for (int row = 0; row < kSide; row++) {
         for (int col = 0; col < kSide; col++) {
@@ -275,7 +298,7 @@ void BoardWidget::drawStones(QPainter& painter) {
             if (piece == Piece::Empty) {
                 continue;
             }
-            const QPoint center = gridToScreen(row, col);
+            const QPointF center = gridToScreenF(row, col);
 
             QPainterPath shadowPath;
             shadowPath.addEllipse(QPointF(center.x() + 2, center.y() + 2),
@@ -299,9 +322,9 @@ void BoardWidget::drawStones(QPainter& painter) {
                 painter.drawPixmap(circle.toRect(), *image);
                 painter.fillRect(circle, QColor(0, 0, 0, 18));
             } else {
-                QRadialGradient gradient(center.x() - radius * 0.3,
-                                         center.y() - radius * 0.35,
-                                         radius * 1.25);
+            QRadialGradient gradient(center.x() - radius * 0.3,
+                                     center.y() - radius * 0.35,
+                                     radius * 1.25);
                 gradient.setColorAt(0, light);
                 gradient.setColorAt(1, dark);
                 painter.setPen(Qt::NoPen);
@@ -331,8 +354,8 @@ void BoardWidget::drawRing(QPainter& painter) {
     if (ringProgress_ < 0 || ringRow_ < 0) {
         return;
     }
-    const int cell = gridArea().width() / (kSide - 1);
-    const QPoint center = gridToScreen(ringRow_, ringCol_);
+    const int cell = cellSize();
+    const QPointF center = gridToScreenF(ringRow_, ringCol_);
     const double progress = ringProgress_;
     const double radius = cell * (0.45 + progress * 0.75);
     const Piece piece = game_ ? game_->pieceAt(ringRow_, ringCol_) : Piece::Empty;
@@ -342,8 +365,7 @@ void BoardWidget::drawRing(QPainter& painter) {
     QPen pen(color, 2);
     painter.setPen(pen);
     painter.setBrush(Qt::NoBrush);
-    painter.drawEllipse(center, static_cast<int>(radius),
-                        static_cast<int>(radius));
+    painter.drawEllipse(center, radius, radius);
 }
 
 void BoardWidget::playPlaceEffect(int row, int col, Piece piece) {
@@ -392,18 +414,17 @@ void BoardWidget::drawWinLine(QPainter& painter) {
     if (winLine_.empty()) {
         return;
     }
-    const int cell = gridArea().width() / (kSide - 1);
+    const double cell = cellSize();
     const QColor accent = winPulse_
         ? QColor(224, 166, 62, 250)
         : QColor(224, 166, 62, 160);
-    QPen pen(accent, qMax(3, cell / 14));
+    QPen pen(accent, qMax<qreal>(3.0, cell / 14.0));
     painter.setPen(pen);
     painter.setBrush(Qt::NoBrush);
 
     for (const GameMove& move : winLine_) {
-        const QPoint p = gridToScreen(move.row, move.col);
-        painter.drawEllipse(p, static_cast<int>(cell * 0.48),
-                            static_cast<int>(cell * 0.48));
+        const QPointF p = gridToScreenF(move.row, move.col);
+        painter.drawEllipse(p, cell * 0.48, cell * 0.48);
     }
 }
 
@@ -423,8 +444,8 @@ void BoardWidget::drawParticles(QPainter& painter) {
 void BoardWidget::spawnParticles(int row, int col, int count,
                                  double spread,
                                  const std::vector<QColor>& colors) {
-    const QPoint center = gridToScreen(row, col);
-    const double cell = gridArea().width() / (kSide - 1);
+    const QPointF center = gridToScreenF(row, col);
+    const double cell = cellSize();
     for (int i = 0; i < count; i++) {
         const double angle = 2.0 * M_PI * i / count +
                              (QRandomGenerator::global()->generateDouble() - 0.5) * 0.7;
@@ -445,7 +466,7 @@ void BoardWidget::spawnParticles(int row, int col, int count,
 void BoardWidget::mousePressEvent(QMouseEvent* event) {
     if (event->button() == Qt::LeftButton && game_) {
         const QPoint p = event->pos();
-        const int cell = gridArea().width() / (kSide - 1);
+        const int cell = cellSize();
         int col = qRound((p.x() - gridArea().left()) / static_cast<double>(cell));
         int row = qRound((p.y() - gridArea().top()) / static_cast<double>(cell));
         if (row >= 0 && row < kSide && col >= 0 && col < kSide) {
@@ -455,7 +476,7 @@ void BoardWidget::mousePressEvent(QMouseEvent* event) {
 }
 
 void BoardWidget::mouseMoveEvent(QMouseEvent* event) {
-    const int cell = gridArea().width() / (kSide - 1);
+    const int cell = cellSize();
     hoverCol_ = qRound((event->pos().x() - gridArea().left()) /
                        static_cast<double>(cell));
     hoverRow_ = qRound((event->pos().y() - gridArea().top()) /
