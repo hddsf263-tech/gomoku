@@ -1,5 +1,4 @@
-#ifndef NETWORK_MANAGER_H
-#define NETWORK_MANAGER_H
+#pragma once
 
 #include <QTcpServer>
 #include <QTcpSocket>
@@ -9,8 +8,6 @@
 
 namespace Gomoku {
 
-/// @brief 双人联机网络管理：主机(监听)/客户端(连接)，使用 Qt TCP + JSON 消息。
-/// 以 std::function 回调通知上层，非 QObject 类，避免额外的 moc 步骤。
 class NetworkManager {
 public:
     enum class Role { None, Host, Client };
@@ -18,16 +15,13 @@ public:
     using VoidCallback = std::function<void()>;
     using ErrorCallback = std::function<void(const QString&)>;
     using MoveCallback = std::function<void(int, int)>;
-    using ColorCallback = std::function<void(int)>;  ///< 0=黑, 1=白
+    using ColorCallback = std::function<void(int)>;
 
     NetworkManager();
     ~NetworkManager();
 
-    /// @brief 作为主机开始监听
     bool listen(quint16 port);
-    /// @brief 作为客户端连接主机
     void connectToHost(const QString& host, quint16 port);
-    /// @brief 断开当前连接
     void disconnectPeer();
 
     bool isConnected() const { return connected_; }
@@ -65,5 +59,3 @@ private:
 };
 
 } // namespace Gomoku
-
-#endif // NETWORK_MANAGER_H
