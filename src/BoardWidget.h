@@ -57,8 +57,10 @@ private:
         QColor color;
     };
 
+    QRect boardRect() const;
     QRect gridArea() const;
     int cellSize() const;
+    QPointF gridToScreenF(int row, int col) const;
     QPoint gridToScreen(int row, int col) const;
 
     void drawBackground(QPainter& painter);
