@@ -15,21 +15,26 @@ NetworkManager::NetworkManager()
     QObject::connect(server_, &QTcpServer::newConnection, [this]() {
         QTcpSocket* client = server_->nextPendingConnection();
         if (socket_) {
-            socket_->disconnectFromHost();
-            socket_->deleteLater();
+            QTcpSocket* previous = socket_;
             socket_ = nullptr;
+            connected_ = false;
+            previous->abort();
+            previous->deleteLater();
         }
         attachSocket(client);
     });
 }
 
 NetworkManager::~NetworkManager() {
-    delete socket_;
+    disconnectPeer();
     delete server_;
 }
 
 bool NetworkManager::listen(quint16 port) {
     role_ = Role::Host;
+    if (server_->isListening()) {
+        server_->close();
+    }
     return server_->listen(QHostAddress::Any, port);
 }
 
@@ -37,7 +42,10 @@ void NetworkManager::connectToHost(const QString& host, quint16 port) {
     role_ = Role::Client;
     auto* s = new QTcpSocket;
     attachSocket(s);
-    QObject::connect(s, &QTcpSocket::connected, [this]() {
+    QObject::connect(s, &QTcpSocket::connected, [this, s]() {
+        if (s != socket_) {
+            return;
+        }
         connected_ = true;
         if (onConnected_) {
             onConnected_();
@@ -48,31 +56,52 @@ void NetworkManager::connectToHost(const QString& host, quint16 port) {
 
 void NetworkManager::disconnectPeer() {
     if (socket_) {
-        socket_->disconnectFromHost();
-        socket_->deleteLater();
+        QTcpSocket* socket = socket_;
         socket_ = nullptr;
+        socket->abort();
+        socket->deleteLater();
     }
     buffer_.clear();
     connected_ = false;
+    if (server_->isListening()) {
+        server_->close();
+    }
 }
 
 void NetworkManager::attachSocket(QTcpSocket* socket) {
     socket_ = socket;
     buffer_.clear();
 
-    QObject::connect(socket_, &QTcpSocket::readyRead, [this]() {
+    QObject::connect(socket, &QTcpSocket::readyRead, [this, socket]() {
+        if (socket != socket_) {
+            return;
+        }
         readAvailable();
     });
-    QObject::connect(socket_, &QTcpSocket::disconnected, [this]() {
+    QObject::connect(socket, &QTcpSocket::disconnected, [this, socket]() {
+        if (socket != socket_) {
+            return;
+        }
+        socket_ = nullptr;
         connected_ = false;
+        buffer_.clear();
         if (onDisconnected_) {
             onDisconnected_();
         }
+        socket->deleteLater();
     });
-    QObject::connect(socket_, &QTcpSocket::errorOccurred,
-                     [this](QAbstractSocket::SocketError) {
+    QObject::connect(socket, &QTcpSocket::errorOccurred,
+                     [this, socket](QAbstractSocket::SocketError) {
+        if (socket != socket_) {
+            return;
+        }
         if (onError_) {
             onError_(socket_ ? socket_->errorString() : QString());
+        }
+        if (!connected_) {
+            socket_ = nullptr;
+            socket->abort();
+            socket->deleteLater();
         }
     });
 
