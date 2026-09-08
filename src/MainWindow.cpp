@@ -346,6 +346,8 @@ QWidget* MainWindow::buildSidebar() {
     roleLayout->setContentsMargins(0, 0, 0, 0);
     netHost_ = new QRadioButton("创建房间", roleRow);
     netClient_ = new QRadioButton("加入房间", roleRow);
+    netHost_->setObjectName("netHost");
+    netClient_->setObjectName("netClient");
     netHost_->setChecked(true);
     auto* roleGroup = new QButtonGroup(roleRow);
     roleGroup->addButton(netHost_, 0);
@@ -364,21 +366,25 @@ QWidget* MainWindow::buildSidebar() {
     hostLabel->setObjectName("mutedLabel");
     netLayout->addWidget(hostLabel);
     netAddress_ = new QLineEdit("127.0.0.1", netOptions_);
+    netAddress_->setObjectName("netAddress");
     netAddress_->setEnabled(false);
     netLayout->addWidget(netAddress_);
     auto* portLabel = new QLabel("端口", netOptions_);
     portLabel->setObjectName("mutedLabel");
     netLayout->addWidget(portLabel);
     netPort_ = new QSpinBox(netOptions_);
+    netPort_->setObjectName("netPort");
     netPort_->setRange(1, 65535);
     netPort_->setValue(12345);
     netLayout->addWidget(netPort_);
     netAction_ = new QPushButton("创建房间", netOptions_);
+    netAction_->setProperty("netAction", true);
     netAction_->setObjectName("primaryBtn");
     netAction_->setCursor(Qt::PointingHandCursor);
     connect(netAction_, &QPushButton::clicked, this, &MainWindow::onNetAction);
     netLayout->addWidget(netAction_);
     netStatus_ = new QLabel("等待开始", netOptions_);
+    netStatus_->setObjectName("netStatus");
     netStatus_->setWordWrap(true);
     netLayout->addWidget(netStatus_);
     netOptions_->hide();
@@ -461,7 +467,7 @@ QPixmap MainWindow::makeStonePixmap(int piece, int size) const {
 
 void MainWindow::setMode(Mode mode) {
     cancelAi();
-    if (mode != Mode::Network && network_.isConnected()) {
+    if (mode != Mode::Network) {
         network_.disconnectPeer();
         netConnected_ = false;
     }
