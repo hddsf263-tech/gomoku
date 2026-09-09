@@ -58,6 +58,7 @@
 ## 7. 已知限制
 
 - **双机局域网（Two-PC LAN）未实测**：本机（localhost）双实例测试通过，但未在两台物理电脑间做真机联机测试。
+- **GUI 视觉/音效回归未逐项重跑**：本阶段未触碰棋盘/棋子皮肤、音效、设置模块；MainWindow 仅在网络模式下新增投降按钮。
 - 防火墙 / 端口策略需用户端放行 `12345`。
 
 ## 8. 后续建议
@@ -81,11 +82,11 @@ Win/Lose: PASS
 Resign: PASS
 Rematch: PASS
 Disconnect: PASS
-Timeout: PASS
+Timeout: PASS（代码路径 + Test R 连接被拒；未做真实 8s 等待）
 Invalid Message Protection: PASS
 State Synchronization: PASS
 Two-PC LAN: NOT TESTED
-Regression: PASS
+Regression: PASS（构建 / AI / 核心回归；棋盘皮肤、棋子皮肤、音效、设置在 GUI 中未在本次逐一重跑）
 Documentation: PASS
 
 ================================
