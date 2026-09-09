@@ -21,6 +21,7 @@ class QButtonGroup;
 class QComboBox;
 class QLineEdit;
 class QRadioButton;
+class QTextEdit;
 class QSpinBox;
 
 namespace Gomoku {
@@ -57,6 +58,10 @@ private slots:
     void onNetError(const QString& text);
     void onResign();
     void onNetResigned(Piece resigner, GameStatus status);
+    void onNetTimeUpdated(qint64 blackRemainingMs, qint64 whiteRemainingMs, Piece currentPlayer);
+    void onNetChatMessage(Piece sender, const QString& text, qint64 timestampMs);
+    void onNetChatSendFailed(const QString& reason);
+    void onSendChat();
 
 private:
     enum class Mode {
@@ -88,6 +93,10 @@ private:
     void setSoundButtonUi();
     void setBoardInteraction();
     void showNetMessage(const QString& text, bool error = false);
+    QString formatTime(qint64 ms) const;
+    void updateTimerDisplay(qint64 blackMs, qint64 whiteMs, Piece current);
+    void appendChatRecord(const QString& senderLabel, const QString& text);
+    void setChatEnabled(bool enabled);
 
     Piece humanPiece() const {
         return humanIsBlack_ ? Piece::Black : Piece::White;
@@ -141,6 +150,14 @@ private:
     QSpinBox* netPort_ = nullptr;
     QPushButton* netAction_ = nullptr;
     QLabel* netStatus_ = nullptr;
+    QComboBox* timeLimitCombo_ = nullptr;
+    QFrame* timeCard_ = nullptr;
+    QLabel* blackTime_ = nullptr;
+    QLabel* whiteTime_ = nullptr;
+    QWidget* chatPanel_ = nullptr;
+    QTextEdit* chatView_ = nullptr;
+    QLineEdit* chatInput_ = nullptr;
+    QPushButton* chatSend_ = nullptr;
 
     Mode mode_ = Mode::HumanHuman;
     bool humanIsBlack_ = true;

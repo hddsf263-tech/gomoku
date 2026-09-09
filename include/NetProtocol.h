@@ -20,12 +20,17 @@ inline constexpr const char* kTypeGameOver  = "GAME_OVER";    // 主机 -> 客�
 inline constexpr const char* kTypeNewGame   = "NEW_GAME";     // 主机 -> 客户端：重赛开局
 inline constexpr const char* kTypeRematch   = "REMATCH";      // 双方：重赛请求/应答 {accept}
 inline constexpr const char* kTypeBye       = "BYE";          // 双方：主动离开
-inline constexpr const char* kTypeResign  = "RESIGN";      // 双方：一方投降 {resigner}
+inline constexpr const char* kTypeResign    = "RESIGN";       // 双方：一方投降 {resigner}
+inline constexpr const char* kTypeChat      = "CHAT_MESSAGE"; // 双方：聊天 {sender,message,ts}
 inline constexpr const char* kTypePing      = "PING";         // 心跳
 inline constexpr const char* kTypePong      = "PONG";         // 心跳应答
 
 // ---- 默认端口 ------------------------------------------------------------
 inline constexpr quint16 kDefaultPort = 12345;
+
+// ---- 聊天限制 ------------------------------------------------------------
+inline constexpr int kMaxChatLength = 200;   // 单条聊天消息最大字符数
+inline constexpr int kDefaultTimeMinutes = 10; // 默认对局时长（分钟）
 
 // ---- 消息构造 ------------------------------------------------------------
 // 全消息统一带 type + version（协议版本），便于扩展。

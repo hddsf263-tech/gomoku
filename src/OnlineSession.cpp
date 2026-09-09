@@ -14,6 +14,7 @@ namespace {
 constexpr int kHeartbeatIntervalMs = 3000;
 constexpr int kHeartbeatTimeoutMs = 12000;
 constexpr int kConnectTimeoutMs = 8000;
+constexpr int kTimerTickMs = 500;
 
 QString statusName(GameStatus status) {
     switch (status) {
@@ -31,6 +32,10 @@ QString winnerName(GameStatus status) {
     case GameStatus::Draw:     return QStringLiteral("DRAW");
     default:                   return QStringLiteral("NONE");
     }
+}
+
+QString pieceName(Piece p) {
+    return p == Piece::Black ? QStringLiteral("BLACK") : QStringLiteral("WHITE");
 }
 
 } // namespace
@@ -58,12 +63,20 @@ OnlineSession::OnlineSession(GameEngine& game, QObject* parent)
     connectTimeoutTimer_.setInterval(kConnectTimeoutMs);
     connectTimeoutTimer_.setSingleShot(true);
     connect(&connectTimeoutTimer_, &QTimer::timeout, this, &OnlineSession::onConnectTimeout);
+    tickTimer_.setInterval(kTimerTickMs);
+    connect(&tickTimer_, &QTimer::timeout, this, &OnlineSession::onTimerTick);
 }
 
 OnlineSession::~OnlineSession() {
     leaving_ = true;
     if (link_) {
         link_->disconnectPeer();
+    }
+}
+void OnlineSession::setTimeLimitMs(qint64 ms) {
+    timeLimitMs_ = ms >= 0 ? ms : 0;
+    if (state_ != OnlineState::Playing) {
+        resetTimers();
     }
 }
 
@@ -78,6 +91,7 @@ bool OnlineSession::isConnected() const {
 bool OnlineSession::startHost(quint16 port) {
     leaving_ = false;
     stopHeartbeat();
+    stopTimerTick();
     connectTimeoutTimer_.stop();
     if (link_) {
         link_->disconnectPeer();
@@ -87,6 +101,7 @@ bool OnlineSession::startHost(quint16 port) {
     wantRematch_ = false;
     oppRematch_ = false;
     game_.reset();
+    resetTimers();
 
     link_ = std::make_unique<net::NetLink>(this);
     connect(link_.get(), &net::NetLink::connected, this, &OnlineSession::onLinkConnected);
@@ -109,16 +124,18 @@ bool OnlineSession::startHost(quint16 port) {
 void OnlineSession::connectToHost(const QString& host, quint16 port) {
     leaving_ = false;
     stopHeartbeat();
+    stopTimerTick();
     connectTimeoutTimer_.stop();
     if (link_) {
         link_->disconnectPeer();
     }
-    myColor_ = Piece::White; // 最终以 WELCOME 为准
+    myColor_ = Piece::White;
     hostAddress_ = host;
     port_ = port;
     wantRematch_ = false;
     oppRematch_ = false;
     game_.reset();
+    resetTimers();
 
     link_ = std::make_unique<net::NetLink>(this);
     connect(link_.get(), &net::NetLink::connected, this, &OnlineSession::onLinkConnected);
@@ -131,16 +148,17 @@ void OnlineSession::connectToHost(const QString& host, quint16 port) {
     emit logMessage(logPrefix() + QStringLiteral("Connecting to %1:%2").arg(host).arg(port));
     link_->connectToHost(host, port);
 }
-
 void OnlineSession::leaveSession() {
     leaving_ = true;
     stopHeartbeat();
+    stopTimerTick();
     connectTimeoutTimer_.stop();
     if (link_) {
         send(net::makeMessage(net::kTypeBye));
         link_->disconnectPeer();
     }
     game_.reset();
+    resetTimers();
     wantRematch_ = false;
     oppRematch_ = false;
     setState(OnlineState::Disconnected);
@@ -205,7 +223,6 @@ void OnlineSession::onLinkError(const QString& text) {
         handlePeerGone();
     }
 }
-
 void OnlineSession::onMessage(const QJsonObject& obj) {
     if (!link_) {
         return;
@@ -221,7 +238,6 @@ void OnlineSession::onMessage(const QJsonObject& obj) {
         return;
     }
     if (type == net::kTypeJoin) {
-        // 主机已在 peer joined 时完成分配；JOIN 仅用于确认。
         return;
     }
     if (type == net::kTypeWelcome) {
@@ -272,7 +288,7 @@ void OnlineSession::onMessage(const QJsonObject& obj) {
     }
     if (type == net::kTypeNewGame) {
         if (!isHost()) {
-            clientApplyNewGame();
+            clientApplyNewGame(obj);
         }
         return;
     }
@@ -287,6 +303,14 @@ void OnlineSession::onMessage(const QJsonObject& obj) {
         handleResign(obj, resigner);
         return;
     }
+    if (type == net::kTypeChat) {
+        if (isHost()) {
+            handleChat(obj);
+        } else {
+            applyChat(obj);
+        }
+        return;
+    }
     if (type == net::kTypeBye) {
         handlePeerGone();
         return;
@@ -294,7 +318,6 @@ void OnlineSession::onMessage(const QJsonObject& obj) {
 
     emit logMessage(logPrefix() + QStringLiteral("unknown message type: %1").arg(type));
 }
-
 // ---------------------------------------------------------------------------
 // Host 逻辑
 // ---------------------------------------------------------------------------
@@ -305,6 +328,8 @@ void OnlineSession::hostOnPeerJoined() {
     emit colorAssigned(Piece::Black);
 
     setState(OnlineState::Playing);
+    resetTimers();
+    beginTurn();
     send(net::makeMessage(net::kTypeWelcome,
                           QJsonObject{{QStringLiteral("color"), static_cast<int>(Piece::White)}}));
     hostBroadcastState();
@@ -334,10 +359,17 @@ bool OnlineSession::hostValidateMove(int row, int col, Piece player, QString& re
         reason = QStringLiteral("CELL_OCCUPIED");
         return false;
     }
+    if (timeLimitMs_ > 0 && turnStartMs_ > 0 &&
+        activeRemainingMs_ - (QDateTime::currentMSecsSinceEpoch() - turnStartMs_) <= 0) {
+        reason = QStringLiteral("TIME_EXPIRED");
+        return false;
+    }
     return true;
 }
 
 void OnlineSession::hostCommitMove(int row, int col, Piece player) {
+    Q_UNUSED(player);
+    settleTurn(game_.currentPlayer());
     const Piece placed = game_.currentPlayer();
     if (!game_.makeMove(row, col)) {
         emit errorOccurred(QStringLiteral("主机校验与落子不一致"));
@@ -346,7 +378,9 @@ void OnlineSession::hostCommitMove(int row, int col, Piece player) {
     send(net::makeMessage(net::kTypeMove,
                           QJsonObject{{QStringLiteral("x"), col},
                                       {QStringLiteral("y"), row},
-                                      {QStringLiteral("piece"), static_cast<int>(placed)}}));
+                                      {QStringLiteral("piece"), static_cast<int>(placed)},
+                                      {QStringLiteral("blackMs"), blackRemainingMs_},
+                                      {QStringLiteral("whiteMs"), whiteRemainingMs_}}));
     emit moveCommitted(row, col, placed, game_.status());
     emit logMessage(logPrefix() + QStringLiteral("MOVE accepted x=%1 y=%2 player=%3")
                         .arg(col).arg(row).arg(placed == Piece::Black ? "BLACK" : "WHITE"));
@@ -364,13 +398,22 @@ void OnlineSession::hostBroadcastState() {
     data[QStringLiteral("current")] = static_cast<int>(game_.currentPlayer());
     data[QStringLiteral("status")] = statusName(game_.status());
     data[QStringLiteral("winner")] = winnerName(game_.status());
+    data[QStringLiteral("blackMs")] = blackRemainingMs_;
+    data[QStringLiteral("whiteMs")] = whiteRemainingMs_;
+    data[QStringLiteral("turnStart")] = turnStartMs_;
+    data[QStringLiteral("timeLimit")] = timeLimitMs_;
     send(net::makeMessage(net::kTypeState, data));
 }
 
 void OnlineSession::hostStartNewGame() {
     game_.reset();
+    resetTimers();
     setState(OnlineState::Playing);
-    send(net::makeMessage(net::kTypeNewGame));
+    beginTurn();
+    send(net::makeMessage(net::kTypeNewGame,
+                          QJsonObject{{QStringLiteral("blackMs"), blackRemainingMs_},
+                                      {QStringLiteral("whiteMs"), whiteRemainingMs_},
+                                      {QStringLiteral("timeLimit"), timeLimitMs_}}));
     emit sessionStarted();
     emit rematchAccepted();
     startHeartbeat();
@@ -382,7 +425,6 @@ void OnlineSession::maybeStartRematch() {
         hostStartNewGame();
     }
 }
-
 // ---------------------------------------------------------------------------
 // Client 逻辑
 // ---------------------------------------------------------------------------
@@ -396,7 +438,6 @@ void OnlineSession::clientApplyWelcome(const QJsonObject& data) {
     const int color = data.value(QStringLiteral("color")).toInt(static_cast<int>(Piece::White));
     myColor_ = static_cast<Piece>(color);
     emit colorAssigned(myColor_);
-    // 等待 STATE 到来后进入对局。
 }
 
 void OnlineSession::clientApplyState(const QJsonObject& data) {
@@ -419,6 +460,14 @@ void OnlineSession::clientApplyState(const QJsonObject& data) {
         }
     }
 
+    const qint64 blackMs = data.value(QStringLiteral("blackMs")).toInt(0);
+    const qint64 whiteMs = data.value(QStringLiteral("whiteMs")).toInt(0);
+    const Piece current = static_cast<Piece>(
+        data.value(QStringLiteral("current")).toInt(static_cast<int>(game_.currentPlayer())));
+    blackRemainingMs_ = blackMs;
+    whiteRemainingMs_ = whiteMs;
+    timeLimitMs_ = static_cast<qint64>(data.value(QStringLiteral("timeLimit")).toDouble(timeLimitMs_));
+
     setState(OnlineState::Playing);
     emit sessionStarted();
     startHeartbeat();
@@ -435,11 +484,16 @@ void OnlineSession::clientApplyState(const QJsonObject& data) {
             const std::vector<GameMove> line = game_.winningLine(lastRow, lastCol);
             emit gameStatusChanged(status, line, true);
             stopHeartbeat();
+            stopTimerTick();
+            emit timeUpdated(blackRemainingMs_, whiteRemainingMs_, current);
+        } else {
+            beginTurn();
         }
+    } else {
+        beginTurn();
     }
     emit logMessage(logPrefix() + QStringLiteral("STATE applied (%1 moves)").arg(moves.size()));
 }
-
 void OnlineSession::clientApplyMove(const QJsonObject& data) {
     const int col = data.value(QStringLiteral("x")).toInt(-1);
     const int row = data.value(QStringLiteral("y")).toInt(-1);
@@ -450,6 +504,16 @@ void OnlineSession::clientApplyMove(const QJsonObject& data) {
     }
     const Piece placed = game_.currentPlayer();
     game_.makeMove(row, col);
+
+    const qint64 blackMs = data.value(QStringLiteral("blackMs")).toInt(-1);
+    const qint64 whiteMs = data.value(QStringLiteral("whiteMs")).toInt(-1);
+    if (blackMs >= 0) {
+        blackRemainingMs_ = blackMs;
+    }
+    if (whiteMs >= 0) {
+        whiteRemainingMs_ = whiteMs;
+    }
+
     emit moveCommitted(row, col, placed, game_.status());
     emit logMessage(logPrefix() + QStringLiteral("MOVE applied x=%1 y=%2").arg(col).arg(row));
     if (game_.status() != GameStatus::InProgress) {
@@ -457,14 +521,18 @@ void OnlineSession::clientApplyMove(const QJsonObject& data) {
         const std::vector<GameMove> line = game_.winningLine(row, col);
         emit gameStatusChanged(game_.status(), line, true);
         stopHeartbeat();
+        stopTimerTick();
+        emit timeUpdated(blackRemainingMs_, whiteRemainingMs_, game_.currentPlayer());
         emit logMessage(logPrefix() + QStringLiteral("GAME_OVER winner=%1")
                             .arg(winnerName(game_.status())));
+    } else {
+        beginTurn();
     }
 }
 
 void OnlineSession::clientApplyGameOver(const QJsonObject& data) {
     if (state_ == OnlineState::GameOver) {
-        return; // 已通过 MOVE 应用过，幂等
+        return;
     }
     const QString winner = data.value(QStringLiteral("winner")).toString();
     GameStatus status = GameStatus::Draw;
@@ -473,7 +541,11 @@ void OnlineSession::clientApplyGameOver(const QJsonObject& data) {
     } else if (winner == QStringLiteral("WHITE")) {
         status = GameStatus::WhiteWin;
     }
+    if (status != GameStatus::Draw) {
+        game_.forceResult(status);
+    }
     setState(OnlineState::GameOver);
+    stopTimerTick();
     const auto last = game_.lastMove();
     std::vector<GameMove> line;
     if (last.has_value() && status != GameStatus::Draw) {
@@ -484,15 +556,24 @@ void OnlineSession::clientApplyGameOver(const QJsonObject& data) {
     emit logMessage(logPrefix() + QStringLiteral("GAME_OVER (explicit) winner=%1").arg(winner));
 }
 
-void OnlineSession::clientApplyNewGame() {
+void OnlineSession::clientApplyNewGame(const QJsonObject& data) {
     resetGame();
+    const qint64 blackMs = data.value(QStringLiteral("blackMs")).toInt(-1);
+    const qint64 whiteMs = data.value(QStringLiteral("whiteMs")).toInt(-1);
+    if (blackMs >= 0) {
+        blackRemainingMs_ = blackMs;
+    }
+    if (whiteMs >= 0) {
+        whiteRemainingMs_ = whiteMs;
+    }
+    timeLimitMs_ = static_cast<qint64>(data.value(QStringLiteral("timeLimit")).toDouble(timeLimitMs_));
     setState(OnlineState::Playing);
     emit sessionStarted();
     emit rematchAccepted();
     startHeartbeat();
+    beginTurn();
     emit logMessage(logPrefix() + QStringLiteral("NEW_GAME applied (rematch)"));
 }
-
 // ---------------------------------------------------------------------------
 // 重赛
 // ---------------------------------------------------------------------------
@@ -538,6 +619,7 @@ void OnlineSession::handleResign(const QJsonObject& data, const Piece resigner) 
     const GameStatus status = resigner == Piece::Black ? GameStatus::WhiteWin : GameStatus::BlackWin;
     game_.forceResult(status);
     setState(OnlineState::GameOver);
+    stopTimerTick();
     emit resigned(resigner, status);
     emit gameStatusChanged(status, {}, true);
     stopHeartbeat();
@@ -562,14 +644,12 @@ bool OnlineSession::localMove(int row, int col) {
     if (isHost()) {
         QString reason;
         if (!hostValidateMove(row, col, myColor_, reason)) {
-            // 主机本端非法输入，静默忽略（不会向自己发 REJECT）。
             emit logMessage(logPrefix() + QStringLiteral("local host move rejected: %1").arg(reason));
             return false;
         }
         hostCommitMove(row, col, myColor_);
         return true;
     }
-    // 客户端：发送 REQ_MOVE，等待主机回 MOVE 后落地。
     send(net::makeMessage(net::kTypeReqMove,
                           QJsonObject{{QStringLiteral("x"), col},
                                       {QStringLiteral("y"), row}}));
@@ -593,39 +673,40 @@ void OnlineSession::resign() {
     if (state_ != OnlineState::Playing) {
         return;
     }
-    const Piece resigner = myColor_;
-    const GameStatus status = resigner == Piece::Black ? GameStatus::WhiteWin : GameStatus::BlackWin;
+    stopTimerTick();
+    const GameStatus status = myColor_ == Piece::Black ? GameStatus::WhiteWin : GameStatus::BlackWin;
     game_.forceResult(status);
     setState(OnlineState::GameOver);
-    emit resigned(resigner, status);
+    emit resigned(myColor_, status);
     emit gameStatusChanged(status, {}, true);
-    send(net::makeMessage(net::kTypeResign, QJsonObject{{QStringLiteral("resigner"), static_cast<int>(resigner)}}));
+    send(net::makeMessage(net::kTypeResign,
+                          QJsonObject{{QStringLiteral("resigner"), static_cast<int>(myColor_)}}));
     stopHeartbeat();
-    emit logMessage(logPrefix() + QStringLiteral("RESIGN by %1 -> %2")
-                        .arg(resigner == Piece::Black ? "BLACK" : "WHITE")
-                        .arg(status == GameStatus::WhiteWin ? "WHITE_WIN" : "BLACK_WIN"));
+    emit logMessage(logPrefix() + QStringLiteral("RESIGN sent"));
 }
 
 void OnlineSession::answerRematch(bool accept) {
     if (state_ != OnlineState::GameOver && state_ != OnlineState::Restarting) {
         return;
     }
-    wantRematch_ = accept;
+    oppRematch_ = accept;
+    send(net::makeMessage(net::kTypeRematch,
+                          QJsonObject{{QStringLiteral("accept"), accept}}));
     if (accept) {
-        oppRematch_ = true;
-        setState(OnlineState::Restarting);
-        startHeartbeat();
-        send(net::makeMessage(net::kTypeRematch, QJsonObject{{QStringLiteral("accept"), true}}));
-        emit logMessage(logPrefix() + QStringLiteral("REMATCH accepted"));
+        wantRematch_ = true;
+        if (state_ != OnlineState::Restarting) {
+            setState(OnlineState::Restarting);
+            startHeartbeat();
+        }
         maybeStartRematch();
     } else {
-        oppRematch_ = false;
         wantRematch_ = false;
         setState(OnlineState::GameOver);
         stopHeartbeat();
-        send(net::makeMessage(net::kTypeRematch, QJsonObject{{QStringLiteral("accept"), false}}));
-        emit logMessage(logPrefix() + QStringLiteral("REMATCH declined"));
+        stopTimerTick();
+        emit rematchDeclined();
     }
+    emit logMessage(logPrefix() + QStringLiteral("REMATCH answer accept=%1").arg(accept));
 }
 
 // ---------------------------------------------------------------------------
@@ -633,10 +714,11 @@ void OnlineSession::answerRematch(bool accept) {
 // ---------------------------------------------------------------------------
 
 void OnlineSession::startHeartbeat() {
-    lastActivityMs_ = QDateTime::currentMSecsSinceEpoch();
-    if (!heartbeatTimer_.isActive()) {
-        heartbeatTimer_.start();
+    if (!link_ || !link_->isConnected()) {
+        return;
     }
+    lastActivityMs_ = QDateTime::currentMSecsSinceEpoch();
+    heartbeatTimer_.start();
 }
 
 void OnlineSession::stopHeartbeat() {
@@ -644,59 +726,246 @@ void OnlineSession::stopHeartbeat() {
 }
 
 void OnlineSession::onHeartbeatTick() {
-    if (!isConnected()) {
+    if (!link_ || !link_->isConnected()) {
         stopHeartbeat();
-        return;
-    }
-    if (state_ == OnlineState::Connecting) {
         return;
     }
     send(net::makeMessage(net::kTypePing));
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    if (lastActivityMs_ > 0 && (now - lastActivityMs_) >= kHeartbeatTimeoutMs) {
-        emit logMessage(logPrefix() + QStringLiteral("heartbeat timeout"));
+    if (now - lastActivityMs_ > kHeartbeatTimeoutMs) {
+        emit logMessage(logPrefix() + QStringLiteral("heartbeat timeout, peer gone"));
         handlePeerGone();
     }
 }
 
 void OnlineSession::onConnectTimeout() {
-    if (state_ == OnlineState::Connecting && !isConnected()) {
-        emit errorOccurred(QStringLiteral("连接超时，未能连接到主机"));
-        emit logMessage(logPrefix() + QStringLiteral("connect timeout"));
-        if (link_) {
-            link_->disconnectPeer();
-        }
-        setState(OnlineState::Disconnected);
+    if (state_ != OnlineState::Connecting) {
+        return;
     }
+    if (link_) {
+        link_->disconnectPeer();
+    }
+    setState(OnlineState::Disconnected);
+    emit errorOccurred(QStringLiteral("连接超时：无法连接到主机"));
+    emit logMessage(logPrefix() + QStringLiteral("connect timeout"));
 }
 
 void OnlineSession::resetGame() {
     game_.reset();
+    stopTimerTick();
 }
 
 void OnlineSession::handlePeerGone() {
+    if (state_ == OnlineState::Disconnected || state_ == OnlineState::Error) {
+        return;
+    }
     stopHeartbeat();
+    stopTimerTick();
     connectTimeoutTimer_.stop();
-    if (state_ == OnlineState::Disconnected) {
+    if (state_ == OnlineState::Connecting) {
+        setState(OnlineState::Disconnected);
+        emit errorOccurred(QStringLiteral("连接失败：无法连接到主机"));
+        return;
+    }
+    if (state_ == OnlineState::OpponentDisconnected) {
         return;
     }
     setState(OnlineState::OpponentDisconnected);
     emit opponentDisconnected();
-    emit logMessage(logPrefix() + QStringLiteral("opponent disconnected"));
+    emit logMessage(logPrefix() + QStringLiteral("peer gone"));
+}
+
+// ---------------------------------------------------------------------------
+// 计时
+// ---------------------------------------------------------------------------
+
+void OnlineSession::resetTimers() {
+    if (timeLimitMs_ <= 0) {
+        blackRemainingMs_ = 0;
+        whiteRemainingMs_ = 0;
+        activeRemainingMs_ = 0;
+        turnStartMs_ = 0;
+        stopTimerTick();
+        return;
+    }
+    blackRemainingMs_ = timeLimitMs_;
+    whiteRemainingMs_ = timeLimitMs_;
+    activeRemainingMs_ = timeLimitMs_;
+    turnStartMs_ = 0;
+    emit timeUpdated(blackRemainingMs_, whiteRemainingMs_, game_.currentPlayer());
+}
+
+void OnlineSession::beginTurn() {
+    if (state_ != OnlineState::Playing || game_.status() != GameStatus::InProgress) {
+        stopTimerTick();
+        return;
+    }
+    turnStartMs_ = QDateTime::currentMSecsSinceEpoch();
+    activeRemainingMs_ = game_.currentPlayer() == Piece::Black ? blackRemainingMs_ : whiteRemainingMs_;
+    startTimerTick();
+    emit timeUpdated(blackRemainingMs_, whiteRemainingMs_, game_.currentPlayer());
+}
+
+void OnlineSession::settleTurn(Piece mover) {
+    if (timeLimitMs_ <= 0 || turnStartMs_ <= 0) {
+        return;
+    }
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    qint64 elapsed = now - turnStartMs_;
+    if (elapsed < 0) {
+        elapsed = 0;
+    }
+    qint64 remaining = activeRemainingMs_ - elapsed;
+    if (remaining < 0) {
+        remaining = 0;
+    }
+    if (mover == Piece::Black) {
+        blackRemainingMs_ = remaining;
+    } else {
+        whiteRemainingMs_ = remaining;
+    }
+    turnStartMs_ = 0;
+}
+
+void OnlineSession::startTimerTick() {
+    if (timeLimitMs_ <= 0) {
+        return;
+    }
+    if (!tickTimer_.isActive()) {
+        tickTimer_.start();
+    }
+}
+
+void OnlineSession::stopTimerTick() {
+    if (tickTimer_.isActive()) {
+        tickTimer_.stop();
+    }
+}
+
+void OnlineSession::applyTimerState(qint64 blackMs, qint64 whiteMs, Piece current) {
+    blackRemainingMs_ = blackMs;
+    whiteRemainingMs_ = whiteMs;
+    if (state_ == OnlineState::Playing && game_.status() == GameStatus::InProgress) {
+        beginTurn();
+    } else {
+        stopTimerTick();
+    }
+    emit timeUpdated(blackRemainingMs_, whiteRemainingMs_, current);
+}
+
+void OnlineSession::onTimerTick() {
+    if (state_ != OnlineState::Playing || game_.status() != GameStatus::InProgress) {
+        stopTimerTick();
+        return;
+    }
+    if (timeLimitMs_ <= 0 || turnStartMs_ <= 0) {
+        return;
+    }
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 elapsed = now - turnStartMs_;
+    const qint64 remaining = activeRemainingMs_ - elapsed;
+    const Piece current = game_.currentPlayer();
+
+    if (isHost() && remaining <= 0) {
+        handleTimeout();
+        return;
+    }
+
+    if (current == Piece::Black) {
+        blackRemainingMs_ = remaining < 0 ? 0 : remaining;
+    } else {
+        whiteRemainingMs_ = remaining < 0 ? 0 : remaining;
+    }
+    emit timeUpdated(blackRemainingMs_, whiteRemainingMs_, current);
+}
+
+void OnlineSession::handleTimeout() {
+    if (state_ != OnlineState::Playing) {
+        return;
+    }
+    stopTimerTick();
+    const Piece timedOut = game_.currentPlayer();
+    const GameStatus status = timedOut == Piece::Black ? GameStatus::WhiteWin : GameStatus::BlackWin;
+    game_.forceResult(status);
+    setState(OnlineState::GameOver);
+    send(net::makeMessage(net::kTypeGameOver,
+                          QJsonObject{{QStringLiteral("winner"), winnerName(status)},
+                                      {QStringLiteral("reason"), QStringLiteral("TIMEOUT")}}));
+    emit gameStatusChanged(status, {}, true);
+    stopHeartbeat();
+    emit logMessage(logPrefix() + QStringLiteral("TIMEOUT -> %1")
+                        .arg(status == GameStatus::WhiteWin ? QStringLiteral("WHITE_WIN")
+                                                            : QStringLiteral("BLACK_WIN")));
 }
 
 void OnlineSession::checkGameOverAfterMove(int row, int col) {
-    if (game_.status() == GameStatus::InProgress) {
+    if (game_.status() != GameStatus::InProgress) {
+        setState(OnlineState::GameOver);
+        const std::vector<GameMove> line = game_.winningLine(row, col);
+        emit gameStatusChanged(game_.status(), line, true);
+        stopHeartbeat();
+        stopTimerTick();
+        send(net::makeMessage(net::kTypeGameOver,
+                              QJsonObject{{QStringLiteral("winner"), winnerName(game_.status())}}));
+        emit logMessage(logPrefix() + QStringLiteral("GAME_OVER winner=%1")
+                            .arg(winnerName(game_.status())));
+    } else {
+        beginTurn();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 聊天
+// ---------------------------------------------------------------------------
+
+void OnlineSession::sendChat(const QString& text) {
+    if (!link_ || !link_->isConnected()) {
+        emit chatSendFailed(QStringLiteral("未连接到主机"));
         return;
     }
-    setState(OnlineState::GameOver);
-    const std::vector<GameMove> line = game_.winningLine(row, col);
-    emit gameStatusChanged(game_.status(), line, true);
-    send(net::makeMessage(net::kTypeGameOver,
-                          QJsonObject{{QStringLiteral("winner"), winnerName(game_.status())}}));
-    stopHeartbeat();
-    emit logMessage(logPrefix() + QStringLiteral("GAME_OVER winner=%1")
-                        .arg(winnerName(game_.status())));
+    if (text.trimmed().isEmpty()) {
+        emit chatSendFailed(QStringLiteral("消息不能为空"));
+        return;
+    }
+    if (text.size() > net::kMaxChatLength) {
+        emit chatSendFailed(QStringLiteral("消息过长（最多 %1 字）").arg(net::kMaxChatLength));
+        return;
+    }
+    send(net::makeMessage(net::kTypeChat,
+                          QJsonObject{{QStringLiteral("text"), text}}));
+    const Piece sender = myColor_;
+    emit chatMessageReceived(sender, text, QDateTime::currentMSecsSinceEpoch());
+    emit logMessage(logPrefix() + QStringLiteral("CHAT sent"));
+}
+
+void OnlineSession::handleChat(const QJsonObject& data) {
+    const QString text = data.value(QStringLiteral("text")).toString();
+    if (text.trimmed().isEmpty()) {
+        emit logMessage(logPrefix() + QStringLiteral("CHAT ignored (empty)"));
+        return;
+    }
+    if (text.size() > net::kMaxChatLength) {
+        emit logMessage(logPrefix() + QStringLiteral("CHAT ignored (too long)"));
+        send(net::makeMessage(net::kTypeReject,
+                              QJsonObject{{QStringLiteral("reason"), QStringLiteral("CHAT_TOO_LONG")}}));
+        return;
+    }
+    // 客户端已在本地回显，这里只记录到主机侧，不再转发回去
+    const Piece sender = myColor_ == Piece::Black ? Piece::White : Piece::Black;
+    emit chatMessageReceived(sender, text, QDateTime::currentMSecsSinceEpoch());
+    emit logMessage(logPrefix() + QStringLiteral("CHAT relayed"));
+}
+
+void OnlineSession::applyChat(const QJsonObject& data) {
+    const QString text = data.value(QStringLiteral("text")).toString();
+    if (text.trimmed().isEmpty()) {
+        return;
+    }
+    if (text.size() > net::kMaxChatLength) {
+        return;
+    }
+    const Piece sender = myColor_ == Piece::Black ? Piece::White : Piece::Black;
+    emit chatMessageReceived(sender, text, QDateTime::currentMSecsSinceEpoch());
 }
 
 } // namespace Gomoku

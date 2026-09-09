@@ -13,6 +13,8 @@
 #include <QMessageBox>
 #include <QPainter>
 #include <QRadioButton>
+#include <QTextEdit>
+#include <QDateTime>
 #include <QSettings>
 #include <QSpinBox>
 #include <QStyle>
@@ -22,6 +24,7 @@
 
 #include "BoardWidget.h"
 #include "SkinDialog.h"
+#include "NetProtocol.h"
 #include "SoundManager.h"
 
 namespace Gomoku {
@@ -78,6 +81,9 @@ MainWindow::MainWindow(QWidget* parent)
     connect(session_.get(), &OnlineSession::opponentDisconnected, this, &MainWindow::onNetOpponentDisconnected);
     connect(session_.get(), &OnlineSession::errorOccurred, this, &MainWindow::onNetError);
     connect(session_.get(), &OnlineSession::resigned, this, &MainWindow::onNetResigned);
+    connect(session_.get(), &OnlineSession::timeUpdated, this, &MainWindow::onNetTimeUpdated);
+    connect(session_.get(), &OnlineSession::chatMessageReceived, this, &MainWindow::onNetChatMessage);
+    connect(session_.get(), &OnlineSession::chatSendFailed, this, &MainWindow::onNetChatSendFailed);
     connect(session_.get(), &OnlineSession::logMessage, this, [this](const QString& text) {
         Q_UNUSED(text);
     });
@@ -382,10 +388,79 @@ QWidget* MainWindow::buildSidebar() {
     netStatus_ = new QLabel("等待开始", netOptions_);
     netStatus_->setWordWrap(true);
     netLayout->addWidget(netStatus_);
+
+    auto* timeLabel = new QLabel("对局时间", netOptions_);
+    timeLabel->setObjectName("mutedLabel");
+    netLayout->addWidget(timeLabel);
+    timeLimitCombo_ = new QComboBox(netOptions_);
+    timeLimitCombo_->addItem("不限时", 0);
+    timeLimitCombo_->addItem("5 分钟", 5 * 60 * 1000);
+    timeLimitCombo_->addItem("10 分钟", 10 * 60 * 1000);
+    timeLimitCombo_->addItem("15 分钟", 15 * 60 * 1000);
+    timeLimitCombo_->setCurrentIndex(2);
+    netLayout->addWidget(timeLimitCombo_);
     netOptions_->hide();
 
     layout->addWidget(aiOptions_);
     layout->addWidget(netOptions_);
+
+    // 对局计时卡片
+    auto* timeContent = new QWidget(sidebar);
+    auto* timeLay = new QVBoxLayout(timeContent);
+    timeLay->setContentsMargins(0, 0, 0, 0);
+    timeLay->setSpacing(6);
+    auto* blkRow = new QHBoxLayout();
+    blkRow->setSpacing(8);
+    blkRow->addWidget(new QLabel("黑方", timeContent));
+    blkRow->addStretch();
+    blackTime_ = new QLabel("--:--", timeContent);
+    blackTime_->setObjectName("timerText");
+    blkRow->addWidget(blackTime_);
+    timeLay->addLayout(blkRow);
+    auto* wRow = new QHBoxLayout();
+    wRow->setSpacing(8);
+    wRow->addWidget(new QLabel("白方", timeContent));
+    wRow->addStretch();
+    whiteTime_ = new QLabel("--:--", timeContent);
+    whiteTime_->setObjectName("timerText");
+    wRow->addWidget(whiteTime_);
+    timeLay->addLayout(wRow);
+    timeCard_ = buildCard("对局计时", timeContent);
+    timeCard_->hide();
+    layout->addWidget(timeCard_);
+
+    // 对局聊天面板
+    chatPanel_ = new QWidget(sidebar);
+    auto* chatLayout = new QVBoxLayout(chatPanel_);
+    chatLayout->setContentsMargins(0, 0, 0, 0);
+    chatLayout->setSpacing(8);
+    auto* chatTitle = new QLabel("对局聊天", chatPanel_);
+    chatTitle->setObjectName("mutedLabel");
+    chatLayout->addWidget(chatTitle);
+    chatView_ = new QTextEdit(chatPanel_);
+    chatView_->setReadOnly(true);
+    chatView_->setPlaceholderText("暂无消息");
+    chatView_->setObjectName("chatView");
+    chatView_->setFixedHeight(120);
+    chatLayout->addWidget(chatView_);
+    auto* chatRow = new QWidget(chatPanel_);
+    auto* chatRowLayout = new QHBoxLayout(chatRow);
+    chatRowLayout->setContentsMargins(0, 0, 0, 0);
+    chatInput_ = new QLineEdit(chatRow);
+    chatInput_->setPlaceholderText("输入消息…");
+    chatInput_->setMaxLength(net::kMaxChatLength);
+    chatSend_ = new QPushButton("发送", chatRow);
+    chatSend_->setObjectName("primaryBtn");
+    chatSend_->setCursor(Qt::PointingHandCursor);
+    chatInput_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    chatSend_->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+    chatRowLayout->addWidget(chatInput_, 1);
+    chatRowLayout->addWidget(chatSend_);
+    chatLayout->addWidget(chatRow);
+    connect(chatInput_, &QLineEdit::returnPressed, this, &MainWindow::onSendChat);
+    connect(chatSend_, &QPushButton::clicked, this, &MainWindow::onSendChat);
+    chatPanel_->hide();
+    layout->addWidget(chatPanel_);
     layout->addStretch();
 
     return sidebar;
@@ -490,6 +565,15 @@ void MainWindow::updateModePanel() {
     const bool net = mode_ == Mode::Network;
     aiOptions_->setVisible(ai);
     netOptions_->setVisible(net);
+    if (timeCard_) {
+        timeCard_->setVisible(net);
+    }
+    if (chatPanel_) {
+        chatPanel_->setVisible(net);
+    }
+    setChatEnabled(net && session_ && session_->isConnected() &&
+                  session_->state() == OnlineState::Playing &&
+                  game_.status() == GameStatus::InProgress);
 }
 
 void MainWindow::restartCurrent(bool notifyRemote) {
@@ -677,6 +761,12 @@ void MainWindow::startNetwork() {
     }
     game_.reset();
     board_->clearGameVisuals();
+    if (timeLimitCombo_) {
+        session_->setTimeLimitMs(timeLimitCombo_->currentData().toLongLong());
+    }
+    if (chatView_) {
+        chatView_->clear();
+    }
 
     const bool host = netHost_->isChecked();
     const int port = netPort_->value();
@@ -914,6 +1004,11 @@ void MainWindow::updateStatus() {
         resignButton_->setVisible(false);
     }
 
+    const bool netChatOn = mode_ == Mode::Network && session_ && session_->isConnected() &&
+        session_->state() == OnlineState::Playing &&
+        game_.status() == GameStatus::InProgress;
+    setChatEnabled(netChatOn);
+
     setBoardInteraction();
 }
 
@@ -1002,6 +1097,88 @@ void MainWindow::onNetResigned(Piece resigner, GameStatus status) {
     } else {
         showNetMessage("对方已投降", false);
     }
+    setChatEnabled(false);
     updateStatus();
+}
+
+QString MainWindow::formatTime(qint64 ms) const {
+    if (ms <= 0) {
+        return QStringLiteral("--:--");
+    }
+    const qint64 totalSec = ms / 1000;
+    const qint64 minutes = totalSec / 60;
+    const qint64 seconds = totalSec % 60;
+    return QStringLiteral("%1:%2")
+        .arg(minutes, 2, 10, QChar('0'))
+        .arg(seconds, 2, 10, QChar('0'));
+}
+
+void MainWindow::updateTimerDisplay(qint64 blackMs, qint64 whiteMs, Piece current) {
+    if (!blackTime_ || !whiteTime_) {
+        return;
+    }
+    blackTime_->setText(formatTime(blackMs));
+    whiteTime_->setText(formatTime(whiteMs));
+    const bool blackActive = current == Piece::Black;
+    blackTime_->setStyleSheet(blackActive
+        ? "color:#2e5d52;font-weight:800;font-size:16px;"
+        : "color:#8b908c;font-weight:600;font-size:15px;");
+    whiteTime_->setStyleSheet(blackActive
+        ? "color:#8b908c;font-weight:600;font-size:15px;"
+        : "color:#2e5d52;font-weight:800;font-size:16px;");
+}
+
+void MainWindow::appendChatRecord(const QString& senderLabel, const QString& text) {
+    if (!chatView_) {
+        return;
+    }
+    const QString ts = QDateTime::currentDateTime().toString("HH:mm");
+    chatView_->append(QStringLiteral("[%1] %2: %3").arg(ts, senderLabel, text));
+}
+
+void MainWindow::setChatEnabled(bool enabled) {
+    if (!chatInput_ || !chatSend_) {
+        return;
+    }
+    chatInput_->setEnabled(enabled);
+    chatSend_->setEnabled(enabled);
+    if (!enabled) {
+        chatInput_->clear();
+    }
+}
+
+void MainWindow::onNetTimeUpdated(qint64 blackRemainingMs, qint64 whiteRemainingMs, Piece currentPlayer) {
+    updateTimerDisplay(blackRemainingMs, whiteRemainingMs, currentPlayer);
+}
+
+void MainWindow::onNetChatMessage(Piece sender, const QString& text, qint64 timestampMs) {
+    if (mode_ != Mode::Network) {
+        return;
+    }
+    const bool mine = (sender == myColor_);
+    const QString label = mine ? QStringLiteral("我") : QStringLiteral("对方");
+    const QString ts = QDateTime::fromMSecsSinceEpoch(timestampMs).toString("HH:mm");
+    if (chatView_) {
+        chatView_->append(QStringLiteral("[%1] %2: %3").arg(ts, label, text));
+    }
+}
+
+void MainWindow::onNetChatSendFailed(const QString& reason) {
+    showNetMessage("聊天发送失败: " + reason, true);
+}
+
+void MainWindow::onSendChat() {
+    if (mode_ != Mode::Network || !session_ || !session_->isConnected()) {
+        return;
+    }
+    if (!chatInput_) {
+        return;
+    }
+    const QString text = chatInput_->text();
+    if (text.trimmed().isEmpty()) {
+        return;
+    }
+    session_->sendChat(text);
+    chatInput_->clear();
 }
 } // namespace Gomoku

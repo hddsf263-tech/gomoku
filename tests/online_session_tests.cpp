@@ -1,4 +1,4 @@
-﻿#include <QCoreApplication>
+#include <QCoreApplication>
 #include <QEventLoop>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -593,6 +593,295 @@ static void testConnectRefused() {
           "R client ends Disconnected after refused connect");
     CHECK(gotError, "R errorOccurred emitted on connection failure");
 }
+
+// 测试 S：联机计时同步（Host 权威）
+static void testTimerSync() {
+    std::printf("--- Test S: timer sync ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+
+    host.setTimeLimitMs(5 * 60 * 1000);
+    CHECK(host.startHost(0), "S host startHost(0)");
+    const quint16 port = host.port();
+
+    qint64 lastBlack = 0, lastWhite = 0;
+    bool hostGotTime = false;
+    QObject::connect(&host, &OnlineSession::timeUpdated, [&](qint64 b, qint64 w, Piece) {
+        lastBlack = b; lastWhite = w; hostGotTime = true;
+    });
+
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() {
+        return host.state() == OnlineState::Playing && client.state() == OnlineState::Playing;
+    }, 6000), "S both reach Playing");
+    CHECK(waitUntil([&]() { return hostGotTime; }, 3000), "S host got timeUpdated");
+    CHECK(lastBlack == 5 * 60 * 1000 && lastWhite == 5 * 60 * 1000,
+          "S host initial timer = 5 min");
+    CHECK(host.timeLimitMs() == 5 * 60 * 1000, "S host timeLimitMs set");
+    CHECK(client.timeLimitMs() == 5 * 60 * 1000, "S client timeLimitMs synced");
+
+    host.leaveSession();
+    client.leaveSession();
+}
+
+// 测试 T：超时判负（Host 权威）
+static void testTimeout() {
+    std::printf("--- Test T: timeout ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+
+    host.setTimeLimitMs(200);
+    CHECK(host.startHost(0), "T host startHost(0)");
+    const quint16 port = host.port();
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() {
+        return host.state() == OnlineState::Playing && client.state() == OnlineState::Playing;
+    }, 6000), "T both reach Playing");
+    CHECK(waitUntil([&]() {
+        return host.state() == OnlineState::GameOver && client.state() == OnlineState::GameOver;
+    }, 6000), "T both reach GameOver after timeout");
+    CHECK(hostGame.status() == GameStatus::WhiteWin, "T host WhiteWin (black timed out)");
+    CHECK(clientGame.status() == GameStatus::WhiteWin, "T client WhiteWin (black timed out)");
+
+    host.leaveSession();
+    client.leaveSession();
+}
+
+// 测试 U：Host -> Client 聊天
+static void testChatHostToClient() {
+    std::printf("--- Test U: chat host->client ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+    CHECK(host.startHost(0), "U host startHost(0)");
+    const quint16 port = host.port();
+
+    QString receivedText;
+    Piece receivedSender = Piece::Black;
+    QObject::connect(&client, &OnlineSession::chatMessageReceived,
+        [&](Piece sender, const QString& text, qint64) { receivedSender = sender; receivedText = text; });
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() {
+        return host.state() == OnlineState::Playing && client.state() == OnlineState::Playing;
+    }, 6000), "U both reach Playing");
+
+    host.sendChat(QStringLiteral("你好，对手"));
+    CHECK(waitUntil([&]() { return receivedText == QStringLiteral("你好，对手"); }, 4000),
+          "U client received host chat");
+    CHECK(receivedSender == Piece::Black, "U client chat sender=Black");
+
+    host.leaveSession();
+    client.leaveSession();
+}
+
+// 测试 V：Client -> Host 聊天（Host 校验 + 转发）
+static void testChatClientToHost() {
+    std::printf("--- Test V: chat client->host ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+    CHECK(host.startHost(0), "V host startHost(0)");
+    const quint16 port = host.port();
+
+    QString hostText; Piece hostSender = Piece::Black;
+    QObject::connect(&host, &OnlineSession::chatMessageReceived,
+        [&](Piece sender, const QString& text, qint64) { hostSender = sender; hostText = text; });
+    QString clientText;
+    QObject::connect(&client, &OnlineSession::chatMessageReceived,
+        [&](Piece, const QString& text, qint64) { clientText = text; });
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() {
+        return host.state() == OnlineState::Playing && client.state() == OnlineState::Playing;
+    }, 6000), "V both reach Playing");
+
+    client.sendChat(QStringLiteral("收到，开始吧"));
+    CHECK(waitUntil([&]() { return hostText == QStringLiteral("收到，开始吧"); }, 4000),
+          "V host received client chat");
+    CHECK(hostSender == Piece::White, "V host chat sender=White");
+    CHECK(waitUntil([&]() { return clientText == QStringLiteral("收到，开始吧"); }, 4000),
+          "V client sees own chat echo");
+
+    host.leaveSession();
+    client.leaveSession();
+}
+
+// 测试 W：聊天边界（空消息 / 超长 / 连续）
+static void testChatBoundaries() {
+    std::printf("--- Test W: chat boundaries ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+    CHECK(host.startHost(0), "W host startHost(0)");
+    const quint16 port = host.port();
+
+    QString gotFail; bool fail = false;
+    QObject::connect(&client, &OnlineSession::chatSendFailed,
+        [&](const QString& r) { fail = true; gotFail = r; });
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() {
+        return host.state() == OnlineState::Playing && client.state() == OnlineState::Playing;
+    }, 6000), "W both reach Playing");
+
+    client.sendChat(QStringLiteral("   "));
+    CHECK(waitUntil([&]() { return fail; }, 3000), "W client empty chat rejected");
+    fail = false;
+
+    QString longMsg;
+    for (int i = 0; i < net::kMaxChatLength + 5; ++i) {
+        longMsg += QChar('a');
+    }
+    client.sendChat(longMsg);
+    CHECK(waitUntil([&]() { return fail; }, 3000), "W client overlong chat rejected");
+    fail = false;
+
+    QString a, b;
+    QObject::connect(&host, &OnlineSession::chatMessageReceived,
+        [&](Piece, const QString& t, qint64) { if (a.isEmpty()) a = t; else b = t; });
+    client.sendChat(QStringLiteral("first"));
+    client.sendChat(QStringLiteral("second"));
+    CHECK(waitUntil([&]() {
+        return a == QStringLiteral("first") && b == QStringLiteral("second");
+    }, 4000), "W consecutive chat delivered in order");
+    (void)gotFail;
+
+    host.leaveSession();
+    client.leaveSession();
+}
+
+// 测试 X：客户端聊天不会重复回显（Host 不应把消息转发回发送者）
+static void testChatNoDuplicateEcho() {
+    std::printf("--- Test X: chat no duplicate echo ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+    CHECK(host.startHost(0), "X host startHost(0)");
+    const quint16 port = host.port();
+
+    int clientChatCount = 0;
+    QString clientText;
+    QObject::connect(&client, &OnlineSession::chatMessageReceived,
+        [&](Piece, const QString& text, qint64) { ++clientChatCount; clientText = text; });
+    int hostChatCount = 0;
+    QObject::connect(&host, &OnlineSession::chatMessageReceived,
+        [&](Piece, const QString&, qint64) { ++hostChatCount; });
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() {
+        return host.state() == OnlineState::Playing && client.state() == OnlineState::Playing;
+    }, 6000), "X both reach Playing");
+
+    client.sendChat(QStringLiteral("重复检查😀"));
+    CHECK(waitUntil([&]() { return hostChatCount >= 1; }, 4000), "X host received client chat");
+
+    // 等待足够时间，确认主机不会再转发回客户端（否则 clientChatCount 会 >= 2）
+    QEventLoop waitLoop;
+    QTimer waitTimer;
+    waitTimer.setSingleShot(true);
+    QObject::connect(&waitTimer, &QTimer::timeout, [&]() { waitLoop.quit(); });
+    waitTimer.start(800);
+    waitLoop.exec();
+    CHECK(clientChatCount == 1, "X client sees exactly one echo (no duplicate)");
+    CHECK(clientText == QStringLiteral("重复检查😀"), "X client echo text correct");
+
+    host.leaveSession();
+    client.leaveSession();
+}
+
+// 测试 Y：落子后计时从黑方切换到白方（Host 权威）
+static void testTimerSwitchAfterMove() {
+    std::printf("--- Test Y: turn timer switch after move ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+
+    const qint64 limit = 5 * 60 * 1000;
+    host.setTimeLimitMs(limit);
+    CHECK(host.startHost(0), "Y host startHost(0)");
+    const quint16 port = host.port();
+
+    bool sawWhiteTurn = false;
+    bool firstWhiteFull = false;
+    qint64 blackAtSwitch = 0;
+    QObject::connect(&host, &OnlineSession::timeUpdated, [&](qint64 b, qint64 w, Piece cur) {
+        if (cur == Piece::White && !sawWhiteTurn) {
+            sawWhiteTurn = true;
+            firstWhiteFull = (w == limit);
+            blackAtSwitch = b;
+        }
+    });
+
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() {
+        return host.state() == OnlineState::Playing && client.state() == OnlineState::Playing;
+    }, 6000), "Y both reach Playing");
+
+    // 黑方（主机）先手落子，计时应切到白方
+    CHECK(host.localMove(7, 7), "Y host black move (7,7)");
+    CHECK(waitUntil([&]() { return sawWhiteTurn; }, 4000), "Y timer switched to White after move");
+    CHECK(firstWhiteFull, "Y white clock full at switch to White");
+    CHECK(blackAtSwitch < limit, "Y black clock consumed time");
+
+    host.leaveSession();
+    client.leaveSession();
+}
+
+// 测试 Z：重赛（再来一局）重置双方计时
+static void testRematchTimerReset() {
+    std::printf("--- Test Z: rematch resets timers ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+
+    const qint64 limit = 5 * 60 * 1000;
+    host.setTimeLimitMs(limit);
+    CHECK(host.startHost(0), "Z host startHost(0)");
+    const quint16 port = host.port();
+
+    bool hostResetSeen = false;
+    bool clientResetSeen = false;
+    QObject::connect(&host, &OnlineSession::timeUpdated, [&](qint64 b, qint64 w, Piece cur) {
+        if (b == limit && w == limit && cur == Piece::Black) hostResetSeen = true;
+    });
+    QObject::connect(&client, &OnlineSession::timeUpdated, [&](qint64 b, qint64 w, Piece cur) {
+        if (b == limit && w == limit && cur == Piece::Black) clientResetSeen = true;
+    });
+
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() {
+        return host.state() == OnlineState::Playing && client.state() == OnlineState::Playing;
+    }, 6000), "Z both reach Playing");
+
+    // 清掉开局的“满值”标记，才能验证重赛确实重置
+    hostResetSeen = false;
+    clientResetSeen = false;
+
+    // 快速结束本局：主机投降
+    host.resign();
+    CHECK(waitUntil([&]() {
+        return host.state() == OnlineState::GameOver && client.state() == OnlineState::GameOver;
+    }, 4000), "Z both reach GameOver after resign");
+
+    // 重赛流程
+    bool clientRequested = false;
+    QObject::connect(&client, &OnlineSession::rematchRequested, [&]() {
+        clientRequested = true;
+        client.answerRematch(true);
+    });
+    host.requestRematch();
+    CHECK(waitUntil([&]() { return clientRequested; }, 4000), "Z client saw rematchRequested");
+
+    CHECK(waitUntil([&]() {
+        return hostGame.moveCount() == 0 && clientGame.moveCount() == 0 &&
+               host.state() == OnlineState::Playing && client.state() == OnlineState::Playing;
+    }, 4000), "Z both reset to Playing after rematch");
+
+    CHECK(hostResetSeen, "Z host timers reset to full after rematch");
+    CHECK(clientResetSeen, "Z client timers reset to full after rematch");
+
+    host.leaveSession();
+    client.leaveSession();
+}
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
     testProtocol();
@@ -611,6 +900,14 @@ int main(int argc, char* argv[]) {
     testRematchStateMachine();
     testResignIdempotency();
     testConnectRefused();
+    testTimerSync();
+    testTimeout();
+    testChatHostToClient();
+    testChatClientToHost();
+    testChatBoundaries();
+    testChatNoDuplicateEcho();
+    testTimerSwitchAfterMove();
+    testRematchTimerReset();
     std::printf("====================================\n");
     std::printf("TOTAL checks: %d  FAILS: %d\n", g_checks, g_fails);
     std::fflush(stdout);
