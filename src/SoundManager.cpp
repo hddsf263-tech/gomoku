@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <utility>
 
 namespace Gomoku {
 
@@ -147,6 +148,10 @@ SoundManager::SoundManager(QObject* parent)
             customPlayer_->play();
         }
     });
+    connect(customPlayer_, &QMediaPlayer::errorOccurred,
+            this, [this](QMediaPlayer::Error, const QString&) {
+        pendingCustomPlay_ = false;
+    });
     ensureAllEffects();
 }
 
@@ -158,17 +163,38 @@ void SoundManager::setMuted(bool muted) {
         pendingEffectPlays_.clear();
         pendingCustomPlay_ = false;
         customPlayer_->stop();
+        for (QSoundEffect* effect : std::as_const(effects_)) {
+            if (effect) {
+                effect->stop();
+            }
+        }
     }
 }
 
 void SoundManager::setPlaceSound(const QString& mode, const QString& customPath) {
+    if (placeMode_ == mode && customPlacePath_ == customPath) {
+        return;
+    }
     placeMode_ = mode;
     customPlacePath_ = customPath;
+    pendingEffectPlays_.clear();
+    pendingCustomPlay_ = false;
+    if (mode != "custom") {
+        customPlayer_->stop();
+    }
 }
 
 void SoundManager::setWinSound(const QString& mode, const QString& customPath) {
+    if (winMode_ == mode && customWinPath_ == customPath) {
+        return;
+    }
     winMode_ = mode;
     customWinPath_ = customPath;
+    pendingEffectPlays_.clear();
+    pendingCustomPlay_ = false;
+    if (mode != "custom") {
+        customPlayer_->stop();
+    }
 }
 
 QString SoundManager::ensureWav(const QString& name,
@@ -243,6 +269,14 @@ void SoundManager::playBuiltin(const QString& key) {
             }
         });
         effect->setSource(QUrl::fromLocalFile(path));
+    }
+    const QUrl expectedUrl = QUrl::fromLocalFile(path);
+    const bool sourceMissing = effect->source().isEmpty();
+    const bool sourceChanged = effect->source() != expectedUrl;
+    if (effect->status() == QSoundEffect::Error || sourceMissing || sourceChanged) {
+        effect->stop();
+        effect->setSource(QUrl());
+        effect->setSource(expectedUrl);
     }
     if (effect->status() == QSoundEffect::Ready) {
         effect->play();
