@@ -280,6 +280,13 @@ void OnlineSession::onMessage(const QJsonObject& obj) {
         handleRematch(obj);
         return;
     }
+    if (type == net::kTypeResign) {
+        const Piece fallback = isHost() ? Piece::White : Piece::Black;
+        const Piece resigner = static_cast<Piece>(
+            obj.value(QStringLiteral("resigner")).toInt(static_cast<int>(fallback)));
+        handleResign(obj, resigner);
+        return;
+    }
     if (type == net::kTypeBye) {
         handlePeerGone();
         return;
@@ -491,19 +498,51 @@ void OnlineSession::clientApplyNewGame() {
 // ---------------------------------------------------------------------------
 
 void OnlineSession::handleRematch(const QJsonObject& data) {
+    if (state_ != OnlineState::GameOver && state_ != OnlineState::Restarting) {
+        return;
+    }
     const bool accept = data.value(QStringLiteral("accept")).toBool(true);
     oppRematch_ = accept;
     if (accept) {
         if (!wantRematch_) {
             emit rematchRequested();
+            return;
+        }
+        if (state_ != OnlineState::Restarting) {
+            setState(OnlineState::Restarting);
+            startHeartbeat();
         }
         if (isHost() && wantRematch_) {
             hostStartNewGame();
         }
     } else {
-        wantRematch_ = false;
+        if (wantRematch_) {
+            wantRematch_ = false;
+            setState(OnlineState::GameOver);
+            stopHeartbeat();
+        }
         emit rematchDeclined();
     }
+}
+
+void OnlineSession::handleResign(const QJsonObject& data, const Piece resigner) {
+    Q_UNUSED(data);
+    if (state_ != OnlineState::Playing) {
+        return;
+    }
+    const Piece opponent = myColor_ == Piece::Black ? Piece::White : Piece::Black;
+    if (resigner != opponent) {
+        emit logMessage(logPrefix() + QStringLiteral("ignored RESIGN from unexpected party"));
+        return;
+    }
+    const GameStatus status = resigner == Piece::Black ? GameStatus::WhiteWin : GameStatus::BlackWin;
+    game_.forceResult(status);
+    setState(OnlineState::GameOver);
+    emit resigned(resigner, status);
+    emit gameStatusChanged(status, {}, true);
+    stopHeartbeat();
+    emit logMessage(logPrefix() + QStringLiteral("opponent RESIGN -> %1")
+                        .arg(status == GameStatus::WhiteWin ? "WHITE_WIN" : "BLACK_WIN"));
 }
 
 // ---------------------------------------------------------------------------
@@ -543,23 +582,47 @@ void OnlineSession::requestRematch() {
         return;
     }
     wantRematch_ = true;
+    setState(OnlineState::Restarting);
+    startHeartbeat();
     send(net::makeMessage(net::kTypeRematch, QJsonObject{{QStringLiteral("accept"), true}}));
     emit logMessage(logPrefix() + QStringLiteral("REMATCH requested"));
     maybeStartRematch();
 }
 
-void OnlineSession::answerRematch(bool accept) {
-    if (state_ != OnlineState::GameOver) {
+void OnlineSession::resign() {
+    if (state_ != OnlineState::Playing) {
         return;
     }
+    const Piece resigner = myColor_;
+    const GameStatus status = resigner == Piece::Black ? GameStatus::WhiteWin : GameStatus::BlackWin;
+    game_.forceResult(status);
+    setState(OnlineState::GameOver);
+    emit resigned(resigner, status);
+    emit gameStatusChanged(status, {}, true);
+    send(net::makeMessage(net::kTypeResign, QJsonObject{{QStringLiteral("resigner"), static_cast<int>(resigner)}}));
+    stopHeartbeat();
+    emit logMessage(logPrefix() + QStringLiteral("RESIGN by %1 -> %2")
+                        .arg(resigner == Piece::Black ? "BLACK" : "WHITE")
+                        .arg(status == GameStatus::WhiteWin ? "WHITE_WIN" : "BLACK_WIN"));
+}
+
+void OnlineSession::answerRematch(bool accept) {
+    if (state_ != OnlineState::GameOver && state_ != OnlineState::Restarting) {
+        return;
+    }
+    wantRematch_ = accept;
     if (accept) {
-        wantRematch_ = true;
         oppRematch_ = true;
+        setState(OnlineState::Restarting);
+        startHeartbeat();
         send(net::makeMessage(net::kTypeRematch, QJsonObject{{QStringLiteral("accept"), true}}));
         emit logMessage(logPrefix() + QStringLiteral("REMATCH accepted"));
         maybeStartRematch();
     } else {
+        oppRematch_ = false;
         wantRematch_ = false;
+        setState(OnlineState::GameOver);
+        stopHeartbeat();
         send(net::makeMessage(net::kTypeRematch, QJsonObject{{QStringLiteral("accept"), false}}));
         emit logMessage(logPrefix() + QStringLiteral("REMATCH declined"));
     }

@@ -77,6 +77,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(session_.get(), &OnlineSession::rematchDeclined, this, &MainWindow::onNetRematchDeclined);
     connect(session_.get(), &OnlineSession::opponentDisconnected, this, &MainWindow::onNetOpponentDisconnected);
     connect(session_.get(), &OnlineSession::errorOccurred, this, &MainWindow::onNetError);
+    connect(session_.get(), &OnlineSession::resigned, this, &MainWindow::onNetResigned);
     connect(session_.get(), &OnlineSession::logMessage, this, [this](const QString& text) {
         Q_UNUSED(text);
     });
@@ -270,8 +271,15 @@ QWidget* MainWindow::buildSidebar() {
     restartButton_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     connect(undoButton_, &QPushButton::clicked, this, &MainWindow::onUndo);
     connect(restartButton_, &QPushButton::clicked, this, &MainWindow::onRestart);
+    resignButton_ = new QPushButton("投降", actionRow);
+    resignButton_->setObjectName("actionBtn");
+    resignButton_->setCursor(Qt::PointingHandCursor);
+    resignButton_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    resignButton_->setVisible(false);
+    connect(resignButton_, &QPushButton::clicked, this, &MainWindow::onResign);
     actionLayout->addWidget(undoButton_);
     actionLayout->addWidget(restartButton_);
+    actionLayout->addWidget(resignButton_);
     layout->addWidget(actionRow);
 
     auto* moveCard = new QFrame(sidebar);
@@ -891,6 +899,21 @@ void MainWindow::updateStatus() {
 
     undoButton_->setEnabled(!aiThinking_ &&
         mode_ != Mode::Network && game_.moveCount() > 0);
+
+    if (mode_ == Mode::Network) {
+        restartButton_->setText("再来一局");
+        restartButton_->setEnabled(game_.status() != GameStatus::InProgress);
+        resignButton_->setVisible(true);
+        const bool inNetGame = session_ && session_->isConnected() &&
+            session_->state() == OnlineState::Playing &&
+            game_.status() == GameStatus::InProgress;
+        resignButton_->setEnabled(inNetGame);
+    } else {
+        restartButton_->setText("重开");
+        restartButton_->setEnabled(true);
+        resignButton_->setVisible(false);
+    }
+
     setBoardInteraction();
 }
 
@@ -962,4 +985,23 @@ void MainWindow::onNetError(const QString& text) {
     updateStatus();
 }
 
+void MainWindow::onResign() {
+    if (mode_ != Mode::Network || !session_ || !session_->isConnected()) {
+        return;
+    }
+    if (session_->state() != OnlineState::Playing) {
+        return;
+    }
+    session_->resign();
+}
+
+void MainWindow::onNetResigned(Piece resigner, GameStatus status) {
+    Q_UNUSED(status);
+    if (resigner == myColor_) {
+        showNetMessage("你已投降", false);
+    } else {
+        showNetMessage("对方已投降", false);
+    }
+    updateStatus();
+}
 } // namespace Gomoku

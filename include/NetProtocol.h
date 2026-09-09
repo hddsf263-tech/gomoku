@@ -20,6 +20,7 @@ inline constexpr const char* kTypeGameOver  = "GAME_OVER";    // 主机 -> 客�
 inline constexpr const char* kTypeNewGame   = "NEW_GAME";     // 主机 -> 客户端：重赛开局
 inline constexpr const char* kTypeRematch   = "REMATCH";      // 双方：重赛请求/应答 {accept}
 inline constexpr const char* kTypeBye       = "BYE";          // 双方：主动离开
+inline constexpr const char* kTypeResign  = "RESIGN";      // 双方：一方投降 {resigner}
 inline constexpr const char* kTypePing      = "PING";         // 心跳
 inline constexpr const char* kTypePong      = "PONG";         // 心跳应答
 

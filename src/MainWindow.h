@@ -55,6 +55,8 @@ private slots:
     void onNetRematchDeclined();
     void onNetOpponentDisconnected();
     void onNetError(const QString& text);
+    void onResign();
+    void onNetResigned(Piece resigner, GameStatus status);
 
 private:
     enum class Mode {
@@ -112,6 +114,7 @@ private:
     QLabel* moveText_ = nullptr;
     QPushButton* undoButton_ = nullptr;
     QPushButton* restartButton_ = nullptr;
+    QPushButton* resignButton_ = nullptr;
 
     QLabel* blackName_ = nullptr;
     QLabel* blackTag_ = nullptr;

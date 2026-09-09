@@ -52,6 +52,7 @@ public:
     bool isFiveAt(int row, int col, Piece piece) const;
     std::vector<GameMove> winningLine(int row, int col) const;
     bool canPlace(int row, int col) const;
+    void forceResult(GameStatus status);
 
 private:
     void switchPlayer();

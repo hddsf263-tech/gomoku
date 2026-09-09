@@ -45,6 +45,11 @@ bool GameEngine::canPlace(int row, int col) const {
            board_[row][col] == Piece::Empty;
 }
 
+
+void GameEngine::forceResult(GameStatus status) {
+    status_ = status;
+}
+
 bool GameEngine::makeMove(int row, int col) {
     if (!canPlace(row, col)) {
         return false;

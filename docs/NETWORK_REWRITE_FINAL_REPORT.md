@@ -1,4 +1,4 @@
-# 五子棋联机系统完全重写 —— 最终报告
+﻿# 五子棋联机系统完全重写 —— 最终报告
 
 > 文档：docs/NETWORK_REWRITE_FINAL_REPORT.md
 > 项目路径：`D:\gomoku`

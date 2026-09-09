@@ -384,6 +384,197 @@ static void testDisconnectAfterGameOver() {
     host.leaveSession();
 }
 
+
+// 测试 M：Host 投降 -> 白方获胜，Client 感知 resigned
+static void testHostResign() {
+    std::printf("--- Test M: host resign -> client perceives ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+    Piece resignedBy = Piece::Empty;
+    GameStatus resignedStatus = GameStatus::InProgress;
+    bool clientSawResign = false;
+    QObject::connect(&client, &OnlineSession::resigned, [&](Piece r, GameStatus s) {
+        resignedBy = r; resignedStatus = s; clientSawResign = true;
+    });
+    CHECK(host.startHost(0), "M host startHost(0)");
+    const quint16 port = host.port();
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::Playing
+                                && client.state() == OnlineState::Playing; }, 6000),
+          "M both reach Playing");
+    CHECK(host.localMove(7, 7), "M host black move");
+    CHECK(waitUntil([&]() { return clientGame.moveCount() == 1; }, 4000), "M client synced");
+    host.resign();
+    CHECK(hostGame.status() == GameStatus::WhiteWin, "M host board WhiteWin (host/black resigned)");
+    CHECK(waitUntil([&]() { return clientSawResign; }, 4000), "M client saw resigned signal");
+    CHECK(resignedBy == Piece::Black, "M resigner=Black");
+    CHECK(resignedStatus == GameStatus::WhiteWin, "M client status WhiteWin");
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::GameOver
+                                && client.state() == OnlineState::GameOver; }, 4000),
+          "M both reach GameOver");
+    CHECK(clientGame.status() == GameStatus::WhiteWin, "M client board WhiteWin");
+    host.leaveSession();
+    client.leaveSession();
+}
+
+// 测试 N：Client 投降 -> 黑方获胜，Host 感知 resigned
+static void testClientResign() {
+    std::printf("--- Test N: client resign -> host perceives ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+    Piece resignedBy = Piece::Empty;
+    GameStatus resignedStatus = GameStatus::InProgress;
+    bool hostSawResign = false;
+    QObject::connect(&host, &OnlineSession::resigned, [&](Piece r, GameStatus s) {
+        resignedBy = r; resignedStatus = s; hostSawResign = true;
+    });
+    CHECK(host.startHost(0), "N host startHost(0)");
+    const quint16 port = host.port();
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::Playing
+                                && client.state() == OnlineState::Playing; }, 6000),
+          "N both reach Playing");
+    CHECK(host.localMove(7, 7), "N host black move");
+    CHECK(waitUntil([&]() { return clientGame.moveCount() == 1; }, 4000), "N client synced");
+    client.resign();
+    CHECK(clientGame.status() == GameStatus::BlackWin, "N client board BlackWin (client/white resigned)");
+    CHECK(waitUntil([&]() { return hostSawResign; }, 4000), "N host saw resigned signal");
+    CHECK(resignedBy == Piece::White, "N resigner=White");
+    CHECK(resignedStatus == GameStatus::BlackWin, "N host status BlackWin");
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::GameOver
+                                && client.state() == OnlineState::GameOver; }, 4000),
+          "N both reach GameOver");
+    CHECK(hostGame.status() == GameStatus::BlackWin, "N host board BlackWin");
+    host.leaveSession();
+    client.leaveSession();
+}
+
+// 测试 O：投降后仍可再来一局
+static void testResignThenRematch() {
+    std::printf("--- Test O: resign then rematch ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+    CHECK(host.startHost(0), "O host startHost(0)");
+    const quint16 port = host.port();
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::Playing
+                                && client.state() == OnlineState::Playing; }, 6000),
+          "O both reach Playing");
+    host.resign();
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::GameOver
+                                && client.state() == OnlineState::GameOver; }, 4000),
+          "O both GameOver after resign");
+    bool hostSawRematch = false;
+    QObject::connect(&host, &OnlineSession::rematchRequested, [&]() {
+        hostSawRematch = true;
+        host.answerRematch(true);
+    });
+    client.requestRematch();
+    CHECK(waitUntil([&]() { return hostSawRematch; }, 4000), "O host saw rematchRequested");
+    CHECK(waitUntil([&]() { return hostGame.moveCount() == 0 && clientGame.moveCount() == 0
+                                && host.state() == OnlineState::Playing
+                                && client.state() == OnlineState::Playing; }, 4000),
+          "O both reset and Playing after rematch");
+    host.leaveSession();
+    client.leaveSession();
+}
+
+// 测试 P：重赛状态机 - 发起方进入 Restarting，拒绝方回 GameOver 不重置
+static void testRematchStateMachine() {
+    std::printf("--- Test P: rematch state machine ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    OnlineSession client(clientGame);
+    CHECK(host.startHost(0), "P host startHost(0)");
+    const quint16 port = host.port();
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::Playing
+                                && client.state() == OnlineState::Playing; }, 6000),
+          "P both reach Playing");
+    // 直接终局（连五）
+    const int blackMoves[5][2] = {{7,3},{7,4},{7,5},{7,6},{7,7}};
+    const int whiteMoves[4][2] = {{0,0},{0,1},{0,2},{0,3}};
+    for (int i = 0; i < 4; i++) {
+        host.localMove(blackMoves[i][0], blackMoves[i][1]);
+        waitUntil([&]() { return clientGame.moveCount() == hostGame.moveCount(); }, 4000);
+        client.localMove(whiteMoves[i][0], whiteMoves[i][1]);
+        waitUntil([&]() { return hostGame.moveCount() == (2 * i + 2); }, 4000);
+    }
+    host.localMove(blackMoves[4][0], blackMoves[4][1]);
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::GameOver
+                                && client.state() == OnlineState::GameOver; }, 4000),
+          "P both reach GameOver");
+
+    // 发起方立即进入 Restarting
+    host.requestRematch();
+    CHECK(host.state() == OnlineState::Restarting, "P host state Restarting after requestRematch");
+
+    // 对方拒绝：不重置，回 GameOver
+    bool hostDeclined = false;
+    QObject::connect(&host, &OnlineSession::rematchDeclined, [&]() { hostDeclined = true; });
+    client.answerRematch(false);
+    CHECK(waitUntil([&]() { return hostDeclined; }, 4000), "P host saw rematchDeclined");
+    CHECK(waitUntil([&]() { return host.state() == OnlineState::GameOver; }, 4000),
+          "P host back to GameOver after decline");
+    CHECK(hostGame.moveCount() != 0, "P board not reset after decline");
+    host.leaveSession();
+    client.leaveSession();
+}
+
+// 测试 Q：非对局中投降无效 & 重复重赛请求幂等
+static void testResignIdempotency() {
+    std::printf("--- Test Q: resign idempotency / rematch duplicates ---\n");
+    // 未进入对局（未连接）时投降无效
+    {
+        GameEngine g;
+        OnlineSession s(g);
+        s.resign();
+        CHECK(s.state() == OnlineState::Disconnected, "Q still Disconnected");
+        CHECK(g.status() == GameStatus::InProgress, "Q board still InProgress");
+    }
+    // 对局结束后重复请求重赛不崩溃、状态机不破坏
+    {
+        GameEngine hostGame, clientGame;
+        OnlineSession host(hostGame);
+        OnlineSession client(clientGame);
+        CHECK(host.startHost(0), "Q host startHost(0)");
+        const quint16 port = host.port();
+        client.connectToHost(QStringLiteral("127.0.0.1"), port);
+        CHECK(waitUntil([&]() { return host.state() == OnlineState::Playing
+                                    && client.state() == OnlineState::Playing; }, 6000),
+              "Q both reach Playing");
+        const int blackMoves[5][2] = {{7,3},{7,4},{7,5},{7,6},{7,7}};
+        const int whiteMoves[4][2] = {{0,0},{0,1},{0,2},{0,3}};
+        for (int i = 0; i < 4; i++) {
+            host.localMove(blackMoves[i][0], blackMoves[i][1]);
+            waitUntil([&]() { return clientGame.moveCount() == hostGame.moveCount(); }, 4000);
+            client.localMove(whiteMoves[i][0], whiteMoves[i][1]);
+            waitUntil([&]() { return hostGame.moveCount() == (2 * i + 2); }, 4000);
+        }
+        host.localMove(blackMoves[4][0], blackMoves[4][1]);
+        CHECK(waitUntil([&]() { return host.state() == OnlineState::GameOver
+                                    && client.state() == OnlineState::GameOver; }, 4000),
+              "Q both reach GameOver");
+
+        bool clientSawRequest = false;
+        QObject::connect(&client, &OnlineSession::rematchRequested, [&]() {
+            clientSawRequest = true;
+            client.answerRematch(true);
+        });
+        host.requestRematch();
+        host.requestRematch(); // 重复请求应幂等
+        CHECK(waitUntil([&]() { return clientSawRequest; }, 4000), "Q client saw rematchRequested");
+        CHECK(waitUntil([&]() { return hostGame.moveCount() == 0 && clientGame.moveCount() == 0
+                                    && host.state() == OnlineState::Playing
+                                    && client.state() == OnlineState::Playing; }, 4000),
+              "Q both reset and Playing after duplicate rematch");
+        host.leaveSession();
+        client.leaveSession();
+    }
+}
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
     testProtocol();
@@ -396,6 +587,11 @@ int main(int argc, char* argv[]) {
     testHostCloses();
     testRematchDeclined();
     testDisconnectAfterGameOver();
+    testHostResign();
+    testClientResign();
+    testResignThenRematch();
+    testRematchStateMachine();
+    testResignIdempotency();
     std::printf("====================================\n");
     std::printf("TOTAL checks: %d  FAILS: %d\n", g_checks, g_fails);
     std::fflush(stdout);

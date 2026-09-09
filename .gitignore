@@ -1,4 +1,4 @@
-# Build outputs
+﻿# Build outputs
 build/
 cmake-build-*/
 *.exe
@@ -32,3 +32,7 @@ build_*/
 run_deploy/
 整合1.0/
 整合3.0/
+
+# Release packaging (not source)
+整合版本4.0/
+*.zip

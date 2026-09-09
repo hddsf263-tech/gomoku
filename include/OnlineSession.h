@@ -59,6 +59,7 @@ public:
     // ---- UI 交互 ----
     bool localMove(int row, int col);
     void requestRematch();
+    void resign();
     void answerRematch(bool accept);
 
 signals:
@@ -68,6 +69,7 @@ signals:
     void sessionStarted();     // 双方就绪、棋盘已清空、进入对局
     void moveCommitted(int row, int col, Piece piece, GameStatus status);
     void moveRejected(const QString& reason);
+    void resigned(Piece resigner, GameStatus status);
     void gameStatusChanged(GameStatus status, const std::vector<GameMove>& line, bool online);
     void rematchRequested();
     void rematchAccepted();
@@ -107,6 +109,7 @@ private:
 
     // 重赛
     void handleRematch(const QJsonObject& data);
+    void handleResign(const QJsonObject& data, const Piece resigner);
 
     // 心跳 / 通用
     void startHeartbeat();
