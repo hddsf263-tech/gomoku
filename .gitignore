@@ -36,3 +36,6 @@ run_deploy/
 # Release packaging (not source)
 整合版本4.0/
 *.zip
+
+# Release packaging (not source)
+整合版本5.0/
