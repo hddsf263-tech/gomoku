@@ -18,7 +18,7 @@
 
 构建：PASS（build_net_rewrite，CMake + Ninja + mingw1310_64 + Qt 6.11.2）
 单元测试：PASS
-- online_session_tests：TOTAL checks 131, FAILS 0（覆盖协议、连接同步、非法落子、连五/纵线胜负、断线、重赛、投降等 A–Q）
+- online_session_tests：TOTAL checks 134, FAILS 0（A–R，新增连接失败用例）（覆盖协议、连接同步、非法落子、连五/纵线胜负、断线、重赛、投降等 A–Q）
 - gomoku_core_tests：PASS
 - Gomoku `--ai-smoke`：PASS
 

@@ -1,4 +1,4 @@
-#include <QCoreApplication>
+﻿#include <QCoreApplication>
 #include <QEventLoop>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -575,6 +575,24 @@ static void testResignIdempotency() {
         client.leaveSession();
     }
 }
+
+// 测试 R：连接被拒（连接失败）
+static void testConnectRefused() {
+    std::printf("--- Test R: connect refused (connection failure) ---\n");
+    GameEngine hostGame, clientGame;
+    OnlineSession host(hostGame);
+    CHECK(host.startHost(0), "R host startHost(0)");
+    const quint16 port = host.port();
+    host.leaveSession();  // 关闭监听 -> 该端口不再接受连接 -> 连接被拒
+
+    OnlineSession client(clientGame);
+    bool gotError = false;
+    QObject::connect(&client, &OnlineSession::errorOccurred, [&](const QString&) { gotError = true; });
+    client.connectToHost(QStringLiteral("127.0.0.1"), port);
+    CHECK(waitUntil([&]() { return client.state() == OnlineState::Disconnected; }, 8000),
+          "R client ends Disconnected after refused connect");
+    CHECK(gotError, "R errorOccurred emitted on connection failure");
+}
 int main(int argc, char* argv[]) {
     QCoreApplication app(argc, argv);
     testProtocol();
@@ -592,6 +610,7 @@ int main(int argc, char* argv[]) {
     testResignThenRematch();
     testRematchStateMachine();
     testResignIdempotency();
+    testConnectRefused();
     std::printf("====================================\n");
     std::printf("TOTAL checks: %d  FAILS: %d\n", g_checks, g_fails);
     std::fflush(stdout);

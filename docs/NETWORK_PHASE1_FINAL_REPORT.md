@@ -51,7 +51,7 @@
 
 | 测试 | 结果 |
 |------|------|
-| `online_session_tests.exe` | TOTAL checks: 131 FAILS: 0（A–Q）EXIT=0 |
+| `online_session_tests.exe` | TOTAL checks: 134 FAILS: 0（A–R）EXIT=0 |
 | `gomoku_core_tests.exe` | PASS EXIT=0 |
 | `Gomoku.exe --ai-smoke` | AI_SMOKE OK 2 手 · H7 EXIT=0 |
 
