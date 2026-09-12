@@ -8,7 +8,7 @@ set(CMAKE_AUTOMOC ON)
 find_package(Qt6 REQUIRED COMPONENTS
     Core Gui Widgets Network Concurrent Multimedia)
 
-add_executable(Gomoku
+add_executable(Gomoku WIN32
     src/main.cpp
     src/AppSettings.cpp
     src/BoardWidget.cpp

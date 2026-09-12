@@ -17,6 +17,7 @@
 #include <QDateTime>
 #include <QSettings>
 #include <QSpinBox>
+#include <QScrollArea>
 #include <QStyle>
 #include <QVBoxLayout>
 
@@ -49,13 +50,15 @@ QString statusTextFor(GameStatus status) {
 }
 
 static QString localNetworkIpv4() {
+    QString result;
     const QList<QHostAddress> addrs = QNetworkInterface::allAddresses();
     for (const QHostAddress& addr : addrs) {
         if (addr.protocol() == QAbstractSocket::IPv4Protocol && !addr.isLoopback()) {
-            return addr.toString();
+            if (!result.isEmpty()) result += QStringLiteral("  ");
+            result += addr.toString();
         }
     }
-    return QStringLiteral("127.0.0.1");
+    return result.isEmpty() ? QStringLiteral("127.0.0.1") : result;
 }
 } // namespace
 
@@ -247,8 +250,14 @@ QWidget* MainWindow::buildModeBar() {
 }
 
 QWidget* MainWindow::buildSidebar() {
-    auto* sidebar = new QWidget(this);
-    sidebar->setFixedWidth(310);
+    auto* scroll = new QScrollArea(this);
+    scroll->setObjectName("sidebarScroll");
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setFixedWidth(310);
+    auto* sidebar = new QWidget;
+    sidebar->setObjectName("sidebarContent");
     auto* layout = new QVBoxLayout(sidebar);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(12);
@@ -463,7 +472,8 @@ QWidget* MainWindow::buildSidebar() {
     layout->addWidget(chatPanel_);
     layout->addStretch();
 
-    return sidebar;
+    scroll->setWidget(sidebar);
+    return scroll;
 }
 
 QFrame* MainWindow::buildPlayerCard(bool black,
@@ -502,9 +512,18 @@ QFrame* MainWindow::buildPlayerCard(bool black,
 }
 
 QFrame* MainWindow::buildCard(const QString& title, QWidget* content) {
-    Q_UNUSED(title);
-    Q_UNUSED(content);
-    return nullptr;
+    auto* card = new QFrame(this);
+    card->setObjectName("card");
+    auto* lay = new QVBoxLayout(card);
+    lay->setContentsMargins(14, 12, 14, 12);
+    lay->setSpacing(8);
+    auto* titleLabel = new QLabel(title, card);
+    titleLabel->setObjectName("mutedLabel");
+    lay->addWidget(titleLabel);
+    if (content) {
+        lay->addWidget(content);
+    }
+    return card;
 }
 
 QPixmap MainWindow::makeStonePixmap(int piece, int size) const {
@@ -778,8 +797,11 @@ void MainWindow::startNetwork() {
             return;
         }
         const QString ip = localNetworkIpv4();
-        showNetMessage(QStringLiteral("已开启房间，等待对手加入\n本机IP: %1  端口: %2")
-                       .arg(ip).arg(port), false);
+        showNetMessage(QStringLiteral(
+            "已开启房间，等待对手加入\n"
+            "把下面任一 IP 发给对方\n本机IP: %1  端口: %2\n"
+            "若对方连不上，请放行本机防火墙端口")
+            .arg(ip).arg(port), false);
         netAction_->setText("断开连接");
     } else {
         const QString address = netAddress_->text().trimmed();
